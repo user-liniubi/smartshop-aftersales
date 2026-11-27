@@ -9,17 +9,20 @@ from sqlalchemy.orm import Session
 from backend.app.agent.schemas import (
     GetMyOrderArguments,
     SearchAfterSalesPolicyArguments,
+    SearchProductsArguments,
     ToolExecutionResult,
 )
 from backend.app.core.exceptions import AppError
-from backend.app.models import ToolInvocationStatus
+from backend.app.models import KnowledgeCategory, ToolInvocationStatus
 from backend.app.repositories.chat import get_session_owned_by_user
 from backend.app.repositories.tool_invocations import add_tool_invocation
 from backend.app.services.orders import OrderService
+from backend.app.services.products import ProductService
 from backend.app.services.rag import RAGService
 
 GET_MY_ORDER = "get_my_order"
 SEARCH_AFTER_SALES_POLICY = "search_after_sales_policy"
+SEARCH_PRODUCTS = "search_products"
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,11 @@ class ToolRegistry:
                 description="检索当前商家的退换货、保修、配送和商品说明政策。",
                 arguments_model=SearchAfterSalesPolicyArguments,
                 handler=self._search_after_sales_policy,
+            ),
+            SEARCH_PRODUCTS: ToolDefinition(
+                description="查询当前商家的商品参数、实时价格和库存。",
+                arguments_model=SearchProductsArguments,
+                handler=self._search_products,
             ),
         }
 
@@ -184,6 +192,14 @@ class ToolRegistry:
             "status": order.status,
             "product_id": order.product.id,
             "product_name": order.product.name,
+            "carrier": order.carrier,
+            "tracking_no": order.tracking_no,
+            "logistics_status": order.logistics_status,
+            "logistics_updated_at": (
+                order.logistics_updated_at.isoformat()
+                if order.logistics_updated_at is not None
+                else None
+            ),
         }
 
     def _search_after_sales_policy(
@@ -203,11 +219,41 @@ class ToolRegistry:
         rag_context = context.rag_service.retrieve_sync(
             question=raw_arguments.query,
             product_id=raw_arguments.product_id,
+            categories=(
+                KnowledgeCategory.BUSINESS_POLICY,
+                KnowledgeCategory.SUPPORT_SOP,
+                KnowledgeCategory.PRODUCT,
+            ),
         )
         return {
             "grounded": rag_context.grounded,
             "evidence": rag_context.evidence,
             "citations": [citation.model_dump(mode="json") for citation in rag_context.citations],
+        }
+
+    def _search_products(
+        self,
+        context: ToolContext,
+        raw_arguments: BaseModel,
+    ) -> dict[str, Any]:
+        if not isinstance(raw_arguments, SearchProductsArguments):
+            raise TypeError("Unexpected arguments model")
+        products = ProductService(context.session).search(
+            query=raw_arguments.query,
+            limit=raw_arguments.limit,
+        )
+        return {
+            "products": [
+                {
+                    "id": product.id,
+                    "name": product.name,
+                    "description": product.description,
+                    "specs": product.specs_json,
+                    "price": str(product.price),
+                    "stock_quantity": product.stock_quantity,
+                }
+                for product in products
+            ]
         }
 
     @staticmethod

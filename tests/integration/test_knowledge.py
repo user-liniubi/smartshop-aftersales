@@ -3,6 +3,7 @@ from sqlalchemy import func, select
 from backend.app.core.config import Settings
 from backend.app.db.session import Database
 from backend.app.models import Base, Document, DocumentChunk, Product
+from backend.app.models.enums import KnowledgeCategory
 from backend.app.rag.vector_store import VectorChunk
 from backend.app.services.knowledge import KnowledgeService
 from sample_data.seed import seed_demo_data
@@ -64,11 +65,13 @@ def test_knowledge_service_indexes_and_deduplicates_document(tmp_path):
             path=document_path,
             original_filename="warranty.md",
             product_id=headphones.id,
+            category=KnowledgeCategory.PRODUCT,
         )
         duplicate = service.ingest_file(
             path=document_path,
             original_filename="warranty.md",
             product_id=headphones.id,
+            category=KnowledgeCategory.PRODUCT,
         )
 
         assert first.duplicate is False
@@ -95,3 +98,43 @@ def test_knowledge_upload_requires_agent_role(seeded_client):
 
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "agent_role_required"
+
+
+def test_knowledge_reindex_updates_category_metadata(tmp_path):
+    test_database = Database("sqlite+pysqlite:///:memory:")
+    with test_database.engine.begin() as connection:
+        Base.metadata.create_all(connection)
+    path = tmp_path / "process.md"
+    path.write_text(
+        "# 客服流程\n\n## 转人工\n\n证据不足时转人工处理。",
+        encoding="utf-8",
+    )
+    vector_store = FakeVectorStore()
+    settings = Settings(
+        _env_file=None,
+        upload_dir=tmp_path / "uploads",
+        chroma_path=tmp_path / "chroma",
+        rag_chunk_size=100,
+        rag_chunk_overlap=10,
+    )
+    with test_database.session_factory() as session:
+        service = KnowledgeService(
+            session=session,
+            settings=settings,
+            embedder=FakeEmbedder(),
+            vector_store=vector_store,
+        )
+        created = service.ingest_file(
+            path=path,
+            original_filename="process.md",
+            category=KnowledgeCategory.BUSINESS_POLICY,
+        )
+        reindexed = service.reindex_document(
+            document_id=created.document.id,
+            category=KnowledgeCategory.SUPPORT_SOP,
+        )
+
+    assert reindexed.category == "support_sop"
+    assert vector_store.deleted
+    assert vector_store.upserted[-1].category == "support_sop"
+    test_database.dispose()

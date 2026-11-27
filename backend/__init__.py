@@ -1,1 +1,1 @@
-"""SmartShop AfterSales backend package."""
+"""SmartShop AI backend package."""

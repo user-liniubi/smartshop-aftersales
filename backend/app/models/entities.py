@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -21,12 +22,15 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.app.db.base import Base
 from backend.app.models.enums import (
     AfterSalesTicketStatus,
+    AgentDecisionStatus,
     HandoffSource,
     HandoffStatus,
     IngestionJobStatus,
+    KnowledgeCategory,
     KnowledgeDocumentStatus,
     OrderSelectionState,
     OrderStatus,
+    RefundExecutionStatus,
     SenderType,
     SessionStatus,
     ToolInvocationStatus,
@@ -68,10 +72,26 @@ class User(Base):
 
 class Product(Base):
     __tablename__ = "products"
+    __table_args__ = (
+        CheckConstraint("price >= 0", name="valid_price"),
+        CheckConstraint("stock_quantity >= 0", name="valid_stock_quantity"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120), unique=True)
     description: Mapped[str] = mapped_column(Text, default="")
+    specs_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    price: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        default=Decimal("0.00"),
+        server_default="0.00",
+    )
+    stock_quantity: Mapped[int] = mapped_column(default=0, server_default="0")
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default="1",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -120,6 +140,17 @@ class Order(Base):
         String(3),
         default="CNY",
         server_default="CNY",
+    )
+    carrier: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    tracking_no: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    logistics_status: Mapped[str] = mapped_column(
+        String(32),
+        default="not_shipped",
+        server_default="not_shipped",
+    )
+    logistics_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -333,7 +364,7 @@ class AfterSalesTicket(Base):
     __tablename__ = "after_sales_tickets"
     __table_args__ = (
         CheckConstraint(
-            "request_type IN ('return', 'exchange')",
+            "request_type IN ('return', 'exchange', 'repair', 'compensation')",
             name="valid_request_type",
         ),
         CheckConstraint(
@@ -448,6 +479,16 @@ class AfterSalesTicket(Base):
         cascade="all, delete-orphan",
         order_by="AfterSalesTicketEvent.created_at, AfterSalesTicketEvent.id",
     )
+    agent_decision: Mapped[AgentDecision | None] = relationship(
+        back_populates="ticket",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    refund_execution: Mapped[RefundExecution | None] = relationship(
+        back_populates="ticket",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
     @property
     def policy_citations(self) -> list[dict[str, Any]]:
@@ -462,7 +503,7 @@ class AfterSalesTicketEvent(Base):
             name="valid_event_type",
         ),
         CheckConstraint(
-            "actor_type IN ('consumer', 'agent', 'system')",
+            "actor_type IN ('consumer', 'agent', 'system', 'ai')",
             name="valid_actor_type",
         ),
         Index(
@@ -491,7 +532,124 @@ class AfterSalesTicketEvent(Base):
     )
 
     ticket: Mapped[AfterSalesTicket] = relationship(back_populates="events")
+
     actor: Mapped[User | None] = relationship(foreign_keys=[actor_id])
+
+
+class RefundAuthorizationRule(Base):
+    __tablename__ = "refund_authorization_rules"
+    __table_args__ = (
+        CheckConstraint("min_amount >= 0", name="valid_min_amount"),
+        CheckConstraint("max_amount >= min_amount", name="valid_amount_range"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scenario_code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(120))
+    min_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    max_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    version: Mapped[int] = mapped_column(default=1, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class AgentDecision(Base):
+    __tablename__ = "agent_decisions"
+    __table_args__ = (
+        CheckConstraint(
+            "decision_status IN "
+            "('auto_approved', 'manually_approved', 'manual_review', 'rejected')",
+            name="valid_decision_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ticket_id: Mapped[int] = mapped_column(
+        ForeignKey("after_sales_tickets.id", ondelete="CASCADE"),
+        unique=True,
+    )
+    scenario_code: Mapped[str] = mapped_column(String(64))
+    rule_version: Mapped[int]
+    authorization_min: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    authorization_max: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    suggested_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    available_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    confidence: Mapped[Decimal | None] = mapped_column(Numeric(4, 3), nullable=True)
+    analysis: Mapped[str] = mapped_column(Text, default="")
+    policy_citations_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    validation_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    decision_status: Mapped[str] = mapped_column(
+        String(32),
+        default=AgentDecisionStatus.MANUAL_REVIEW.value,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    ticket: Mapped[AfterSalesTicket] = relationship(back_populates="agent_decision")
+
+    @property
+    def validation(self) -> dict[str, Any]:
+        return self.validation_json or {}
+
+
+class RefundExecution(Base):
+    __tablename__ = "refund_executions"
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="valid_amount"),
+        CheckConstraint("attempt_count >= 1", name="valid_attempt_count"),
+        CheckConstraint(
+            "status IN ('pending', 'success', 'failed')",
+            name="valid_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ticket_id: Mapped[int] = mapped_column(
+        ForeignKey("after_sales_tickets.id", ondelete="CASCADE"),
+        unique=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    currency: Mapped[str] = mapped_column(String(3), default="CNY", server_default="CNY")
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default=RefundExecutionStatus.PENDING.value,
+        server_default=RefundExecutionStatus.PENDING.value,
+    )
+    attempt_count: Mapped[int] = mapped_column(default=1, server_default="1")
+    provider: Mapped[str] = mapped_column(String(32), default="simulation")
+    provider_reference: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    executed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    ticket: Mapped[AfterSalesTicket] = relationship(back_populates="refund_execution")
+
+    @property
+    def ticket_no(self) -> str:
+        return self.ticket.ticket_no
 
 
 class Document(Base):
@@ -500,6 +658,10 @@ class Document(Base):
         CheckConstraint(
             "status IN ('processing', 'indexed', 'failed')",
             name="valid_status",
+        ),
+        CheckConstraint(
+            "category IN ('product', 'business_policy', 'support_sop')",
+            name="valid_category",
         ),
     )
 
@@ -514,6 +676,12 @@ class Document(Base):
     source_type: Mapped[str] = mapped_column(String(20))
     sha256: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     version: Mapped[int] = mapped_column(default=1)
+    category: Mapped[str] = mapped_column(
+        String(32),
+        default=KnowledgeCategory.BUSINESS_POLICY.value,
+        server_default=KnowledgeCategory.BUSINESS_POLICY.value,
+        index=True,
+    )
     status: Mapped[str] = mapped_column(
         String(20),
         default=KnowledgeDocumentStatus.PROCESSING.value,
@@ -563,6 +731,10 @@ class IngestionJob(Base):
             "status IN ('pending', 'started', 'success', 'failure')",
             name="valid_status",
         ),
+        CheckConstraint(
+            "category IN ('product', 'business_policy', 'support_sop')",
+            name="valid_category",
+        ),
         Index("ix_ingestion_jobs_status_created_at", "status", "created_at"),
     )
 
@@ -578,6 +750,11 @@ class IngestionJob(Base):
         ForeignKey("products.id", ondelete="SET NULL"),
         nullable=True,
     )
+    category: Mapped[str] = mapped_column(
+        String(32),
+        default=KnowledgeCategory.BUSINESS_POLICY.value,
+        server_default=KnowledgeCategory.BUSINESS_POLICY.value,
+    )
     status: Mapped[str] = mapped_column(
         String(20),
         default=IngestionJobStatus.PENDING.value,
@@ -592,4 +769,100 @@ class IngestionJob(Base):
         DateTime(timezone=True),
         server_default=func.now(),
         onupdate=func.now(),
+    )
+
+
+class DiscountAuthorizationRule(Base):
+    __tablename__ = "discount_authorization_rules"
+    __table_args__ = (
+        CheckConstraint("max_discount_rate > 0", name="valid_discount_rate"),
+        CheckConstraint("max_discount_rate <= 1", name="valid_max_discount_rate"),
+        CheckConstraint("max_discount_amount >= 0", name="valid_discount_amount"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    rule_code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(120))
+    product_id: Mapped[int | None] = mapped_column(
+        ForeignKey("products.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    max_discount_rate: Mapped[Decimal] = mapped_column(Numeric(6, 4))
+    max_discount_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    version: Mapped[int] = mapped_column(default=1, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    product: Mapped[Product | None] = relationship()
+
+
+class DiscountQuote(Base):
+    __tablename__ = "discount_quotes"
+    __table_args__ = (
+        CheckConstraint("unit_price > 0", name="valid_unit_price"),
+        CheckConstraint("discount_rate > 0", name="valid_discount_rate"),
+        CheckConstraint("discount_rate <= 1", name="valid_max_discount_rate"),
+        CheckConstraint("discount_amount > 0", name="valid_discount_amount"),
+        CheckConstraint("final_price >= 0", name="valid_final_price"),
+        Index("ix_discount_quotes_session_created_at", "session_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    quote_no: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        index=True,
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    product_id: Mapped[int] = mapped_column(
+        ForeignKey("products.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    rule_id: Mapped[int] = mapped_column(
+        ForeignKey("discount_authorization_rules.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    discount_rate: Mapped[Decimal] = mapped_column(Numeric(6, 4))
+    discount_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    final_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    currency: Mapped[str] = mapped_column(String(3), default="CNY", server_default="CNY")
+    policy_citations_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+
+class ConfigAuditLog(Base):
+    __tablename__ = "config_audit_logs"
+    __table_args__ = (Index("ix_config_audit_logs_entity_created_at", "entity_type", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    actor_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    entity_type: Mapped[str] = mapped_column(String(64), index=True)
+    entity_id: Mapped[str] = mapped_column(String(64), index=True)
+    action: Mapped[str] = mapped_column(String(32))
+    before_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    after_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
     )

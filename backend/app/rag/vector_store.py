@@ -16,6 +16,7 @@ class VectorChunk:
     filename: str
     title: str
     product_id: int | None
+    category: str
     page: int | None
     heading: str | None
 
@@ -31,6 +32,7 @@ class RetrievedChunk:
     page: int | None
     heading: str | None
     similarity: float
+    category: str = "business_policy"
 
 
 class ChromaVectorStore:
@@ -66,6 +68,7 @@ class ChromaVectorStore:
                     "filename": chunk.filename,
                     "title": chunk.title,
                     "product_id": chunk.product_id or 0,
+                    "category": chunk.category,
                     "page": chunk.page or 0,
                     "heading": chunk.heading or "",
                 }
@@ -79,10 +82,18 @@ class ChromaVectorStore:
         *,
         top_k: int,
         product_id: int | None = None,
+        categories: tuple[str, ...] | None = None,
     ) -> list[RetrievedChunk]:
-        where: dict[str, Any] | None = None
+        conditions: list[dict[str, Any]] = []
         if product_id is not None:
-            where = {"product_id": {"$in": [product_id, 0]}}
+            conditions.append({"product_id": {"$in": [product_id, 0]}})
+        if categories:
+            conditions.append({"category": {"$in": list(categories)}})
+        where: dict[str, Any] | None = None
+        if len(conditions) == 1:
+            where = conditions[0]
+        elif conditions:
+            where = {"$and": conditions}
 
         result = self._collection.query(
             query_embeddings=[embedding],
@@ -111,6 +122,7 @@ class ChromaVectorStore:
                     chunk_index=int(metadata["chunk_index"]),
                     filename=str(metadata["filename"]),
                     title=str(metadata["title"]),
+                    category=str(metadata.get("category", "business_policy")),
                     page=int(metadata["page"]) or None,
                     heading=str(metadata["heading"]) or None,
                     similarity=1.0 - float(distance),

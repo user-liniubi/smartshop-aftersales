@@ -12,7 +12,7 @@ LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 class Settings(BaseSettings):
     """Runtime settings loaded from environment variables or a local .env file."""
 
-    app_name: str = Field(default="SmartShop AfterSales", min_length=1)
+    app_name: str = Field(default="SmartShop AI", min_length=1)
     app_env: Environment = "development"
     debug: bool = False
     log_level: LogLevel = "INFO"
@@ -21,7 +21,7 @@ class Settings(BaseSettings):
         min_length=1,
     )
     database_echo: bool = False
-    redis_url: str = "redis://127.0.0.1:6379/0"
+    redis_url: str = "redis://127.0.0.1:6381/0"
     auth_secret: str = Field(
         default="dev-only-change-this-secret-32chars",
         min_length=32,
@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
     embedding_device: Literal["cpu", "cuda"] = "cpu"
     embedding_local_files_only: bool = False
+    embedding_warmup_on_startup: bool = False
     rag_chunk_size: int = Field(default=500, ge=100, le=2000)
     rag_chunk_overlap: int = Field(default=80, ge=0, le=500)
     rag_top_k: int = Field(default=4, ge=1, le=10)

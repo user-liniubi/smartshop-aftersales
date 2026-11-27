@@ -20,4 +20,5 @@ async def ask_knowledge(
         question=request.question,
         product_id=request.product_id,
         top_k=request.top_k,
+        category=request.category,
     )

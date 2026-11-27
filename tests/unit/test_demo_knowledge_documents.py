@@ -26,7 +26,7 @@ def test_demo_knowledge_documents_exist_and_parse():
 
 
 def test_demo_knowledge_document_product_mappings_are_valid():
-    product_names = {name for name, _ in DEMO_PRODUCTS}
+    product_names = {product[0] for product in DEMO_PRODUCTS}
 
     for document in DEMO_KNOWLEDGE_DOCUMENTS:
         if document.product_name is not None:

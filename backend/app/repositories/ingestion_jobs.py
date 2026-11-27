@@ -11,12 +11,14 @@ def create_ingestion_job(
     filename: str,
     source_path: str,
     product_id: int | None,
+    category: str = "business_policy",
 ) -> IngestionJob:
     job = IngestionJob(
         task_id=task_id,
         filename=filename,
         source_path=source_path,
         product_id=product_id,
+        category=category,
     )
     session.add(job)
     session.commit()

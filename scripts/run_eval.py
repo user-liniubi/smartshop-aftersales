@@ -12,11 +12,16 @@ from sqlalchemy import select
 
 from backend.app.agent.intent import IntentService
 from backend.app.agent.orchestrator import AfterSalesOrchestrator
-from backend.app.agent.tools import GET_MY_ORDER, ToolContext, ToolRegistry
+from backend.app.agent.tools import (
+    GET_MY_ORDER,
+    SEARCH_PRODUCTS,
+    ToolContext,
+    ToolRegistry,
+)
 from backend.app.core.config import get_settings
 from backend.app.core.exceptions import AppError
 from backend.app.db.session import Database
-from backend.app.models import ChatSession, Order, User
+from backend.app.models import ChatSession, KnowledgeCategory, Order, User
 from backend.app.rag.embeddings import BgeEmbeddingProvider
 from backend.app.rag.vector_store import ChromaVectorStore
 from backend.app.services.llm import DeepSeekClient
@@ -89,6 +94,23 @@ def _tool_case_correct(
                 return exc.code == "tool_not_allowed", None
         return True, None
 
+    if case["expected_tool"] == SEARCH_PRODUCTS:
+        try:
+            result = registry.execute(
+                context=context,
+                tool_name=SEARCH_PRODUCTS,
+                arguments={"query": case["message"], "limit": 5},
+            )
+        except AppError:
+            return False, None
+        actual_ids = [int(product["id"]) for product in result.result["products"]]
+        expected_ids = case.get("expected_product_ids") or []
+        expected_id = case.get("product_id")
+        if expected_id is not None and expected_id not in expected_ids:
+            expected_ids = [expected_id, *expected_ids]
+        matched = bool(set(actual_ids).intersection(expected_ids))
+        return matched, expected_id or (actual_ids[0] if actual_ids else None)
+
     if actual_order_no is None:
         return False, None
 
@@ -112,6 +134,7 @@ def _rag_metrics(
     message: str,
     product_id: int | None,
     gold_files: list[str],
+    category: str | None,
 ) -> tuple[bool | None, bool | None, bool | None]:
     if not gold_files:
         return None, None, None
@@ -119,6 +142,7 @@ def _rag_metrics(
         question=message,
         product_id=product_id,
         top_k=5,
+        categories=(KnowledgeCategory(category),) if category else None,
     )
     files = [citation.filename for citation in context.citations]
     gold = set(gold_files)
@@ -161,7 +185,7 @@ def _write_report(
     category_counts = Counter(result.category for result in results)
     category_success = Counter(result.category for result in results if result.task_correct)
     lines = [
-        "# SmartShop AfterSales 固定评测报告",
+        "# SmartShop AI 固定评测报告",
         "",
         "## 指标",
         "",
@@ -189,6 +213,7 @@ def _write_report(
             "- 意图和订单号使用 DeepSeek 结构化输出实测。",
             "- 工具指标验证订单归属和未知工具拦截，不执行任意 SQL。",
             "- RAG Hit@K 以人工标注的 gold files 是否进入前 K 条来源计算。",
+            "- RAG 使用生产链路的分类过滤、query expansion、领域文件提示和文档多样性重排。",
             "- 任务成功率要求意图、订单号、工作流动作、工具行为以及适用的 RAG/拒答均正确。",
             "- 该报告不包含最终回答人工正确率或引用支持度抽检。",
         ]
@@ -209,6 +234,7 @@ def run_evaluation(*, cases_path: Path, output_dir: Path) -> dict[str, Any]:
         settings.embedding_device,
         local_files_only=settings.embedding_local_files_only,
     )
+    embedder.warmup()
     llm = DeepSeekClient(settings)
     intent_service = IntentService(llm)
     registry = ToolRegistry()
@@ -259,9 +285,10 @@ def run_evaluation(*, cases_path: Path, output_dir: Path) -> dict[str, Any]:
 
                 hit_at_3, hit_at_5, _ = _rag_metrics(
                     rag_service=rag_service,
-                    message=case["message"],
+                    message=case.get("retrieval_query", case["message"]),
                     product_id=product_id,
                     gold_files=case.get("gold_files", []),
+                    category=case.get("knowledge_category"),
                 )
                 refusal_correct = _refusal_correct(
                     category=case["category"],

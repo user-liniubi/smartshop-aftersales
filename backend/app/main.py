@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -26,6 +27,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             application_settings.app_name,
             application_settings.app_env,
         )
+        if application_settings.embedding_warmup_on_startup:
+            from backend.app.api.rag_dependencies import get_embedding_provider
+
+            await asyncio.to_thread(get_embedding_provider().warmup)
+            logger.info("Embedding model warmup completed")
         yield
         logger.info("Stopping %s", application_settings.app_name)
 

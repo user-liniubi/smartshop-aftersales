@@ -5,6 +5,7 @@ import pytest
 
 from backend.app.core.config import get_settings
 from backend.app.core.exceptions import AppError
+from backend.app.models import KnowledgeCategory
 from backend.app.rag.chunking import chunk_sections
 from backend.app.rag.parsing import ParsedSection, parse_document
 from backend.app.rag.vector_store import RetrievedChunk
@@ -19,6 +20,7 @@ class FakeEmbedder:
 class FakeVectorStore:
     def __init__(self, chunks: list[RetrievedChunk]) -> None:
         self.chunks = chunks
+        self.last_categories: tuple[str, ...] | None = None
 
     def query(
         self,
@@ -26,7 +28,9 @@ class FakeVectorStore:
         *,
         top_k: int,
         product_id: int | None = None,
+        categories: tuple[str, ...] | None = None,
     ) -> list[RetrievedChunk]:
+        self.last_categories = categories
         return self.chunks[:top_k]
 
 
@@ -163,3 +167,61 @@ def test_rag_refuses_cross_user_order_listing_before_embedding():
     assert response.grounded is False
     assert response.answer == NO_EVIDENCE_ANSWER
     assert response.citations == []
+
+
+def test_lexical_rerank_prioritizes_matching_policy():
+    warranty = RetrievedChunk(
+        vector_id="1:1",
+        content="商品质量问题可申请保修和退换。",
+        document_id=1,
+        chunk_index=1,
+        filename="warranty_policy.md",
+        title="质保政策",
+        page=None,
+        heading=None,
+        similarity=0.78,
+        category="business_policy",
+    )
+    discount = RetrievedChunk(
+        vector_id="2:1",
+        content="客服优惠需要使用商家授权规则，不能叠加。",
+        document_id=2,
+        chunk_index=1,
+        filename="discount_policy.md",
+        title="优惠政策",
+        page=None,
+        heading=None,
+        similarity=0.78,
+        category="business_policy",
+    )
+    service = RAGService(
+        settings=get_settings(),
+        embedder=FakeEmbedder(),
+        vector_store=FakeVectorStore([warranty, discount]),
+        llm=FakeLLM(),
+    )
+
+    context = service.retrieve_sync(question="耳机有什么优惠政策", top_k=2)
+
+    assert context.citations[0].filename == "discount_policy.md"
+
+
+def test_async_retrieve_accepts_single_category_alias():
+    vector_store = FakeVectorStore([_chunk(0.91)])
+    service = RAGService(
+        settings=get_settings(),
+        embedder=FakeEmbedder(),
+        vector_store=vector_store,
+        llm=FakeLLM(),
+    )
+
+    context = asyncio.run(
+        service.retrieve(
+            question="耳机使用说明",
+            product_id=1,
+            category=KnowledgeCategory.PRODUCT,
+        )
+    )
+
+    assert context.grounded is True
+    assert vector_store.last_categories == ("product",)

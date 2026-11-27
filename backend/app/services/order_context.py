@@ -21,8 +21,11 @@ from backend.app.repositories.orders import (
 
 _ORDER_INTENTS = {
     AfterSalesIntent.ORDER_QUERY,
+    AfterSalesIntent.LOGISTICS_QUERY,
     AfterSalesIntent.RETURN_REQUEST,
     AfterSalesIntent.EXCHANGE_REQUEST,
+    AfterSalesIntent.REPAIR_REQUEST,
+    AfterSalesIntent.COMPENSATION_REQUEST,
 }
 _ANOTHER_ORDER_PATTERN = re.compile(r"(另一笔|另一个|别的|不是这个|换一笔|下一笔)")
 _ORDINAL_PATTERN = re.compile(r"第\s*([一二三四五六七八九十\d]+)\s*(?:笔|个|单|条)")

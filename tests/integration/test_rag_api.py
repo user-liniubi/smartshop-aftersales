@@ -5,7 +5,14 @@ from sample_data.seed import DEMO_PASSWORD
 
 
 class FakeRagService:
-    async def ask(self, *, question: str, product_id=None, top_k=None):
+    async def ask(
+        self,
+        *,
+        question: str,
+        product_id=None,
+        top_k=None,
+        category=None,
+    ):
         return RagAskResponse(
             answer="降噪耳机提供十二个月质保。[1]",
             grounded=True,

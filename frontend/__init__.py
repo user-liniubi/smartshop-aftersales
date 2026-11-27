@@ -1,1 +1,1 @@
-"""SmartShop AfterSales Streamlit frontends."""
+"""SmartShop AI Streamlit frontends."""

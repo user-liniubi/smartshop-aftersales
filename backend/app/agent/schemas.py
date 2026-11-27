@@ -9,8 +9,15 @@ from backend.app.models.enums import WorkflowState
 class AfterSalesIntent(StrEnum):
     AFTER_SALES_POLICY = "after_sales_policy"
     ORDER_QUERY = "order_query"
+    PRODUCT_QUERY = "product_query"
+    PRODUCT_COMPARE = "product_compare"
+    LOGISTICS_QUERY = "logistics_query"
     RETURN_REQUEST = "return_request"
     EXCHANGE_REQUEST = "exchange_request"
+    REPAIR_REQUEST = "repair_request"
+    COMPENSATION_REQUEST = "compensation_request"
+    AFTER_SALES_PROGRESS = "after_sales_progress"
+    DISCOUNT_QUERY = "discount_query"
     WARRANTY_QUESTION = "warranty_question"
     HUMAN_REQUEST = "human_request"
     UNKNOWN = "unknown"
@@ -19,6 +26,8 @@ class AfterSalesIntent(StrEnum):
 class IssueType(StrEnum):
     RETURN = "return"
     EXCHANGE = "exchange"
+    REPAIR = "repair"
+    COMPENSATION = "compensation"
     WARRANTY = "warranty"
     DELIVERY = "delivery"
     PRODUCT_USAGE = "product_usage"
@@ -72,6 +81,8 @@ class WorkflowAction(StrEnum):
     ASK_MORE_INFO = "ask_more_info"
     SELECT_ORDER = "select_order"
     QUERY_ORDER = "query_order"
+    PRODUCT_QUERY = "product_query"
+    AFTER_SALES_PROGRESS = "after_sales_progress"
     RETRIEVE_POLICY = "retrieve_policy"
     HANDOFF = "handoff"
 
@@ -102,6 +113,13 @@ class SearchAfterSalesPolicyArguments(BaseModel):
 
     query: str = Field(min_length=2, max_length=500)
     product_id: int | None = Field(default=None, gt=0)
+
+
+class SearchProductsArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1, max_length=200)
+    limit: int = Field(default=3, ge=1, le=5)
 
 
 class ToolExecutionResult(BaseModel):

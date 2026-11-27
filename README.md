@@ -1,14 +1,14 @@
-# SmartShop AfterSales
+# SmartShop AI
 
-**面向消费电子售后的可信决策系统**
+**面向消费电子的单商家售前、履约与售后智能客服系统**
 
-SmartShop AfterSales 聚焦消费者已经拥有订单之后的高风险售后流程：政策咨询、订单查询、退换货资格核验、待审批工单和人工接管。项目不模拟购物车、下单、支付或物流，而是把售后这一条纵向链路做深。
+SmartShop AI 覆盖商品参数、价格与库存咨询，本人订单与物流查询，以及退货、换货、维修、保修政策、待审批工单和人工接管。订单和物流使用本地模拟业务数据，不模拟购物车、下单和支付。
 
 它解决的并不是“让大模型多回答几句售后政策”，而是：
 
 > 当用户信息不完整、订单事实在数据库、政策依据在文档、业务动作还有权限和副作用时，如何让 LLM 可用，但不能越过流程、事实和最终责任边界。
 
-> 项目定位：证据约束 RAG + 受控业务工作流 + 有限 Tool Calling + 人在回路。LLM 负责语义理解与解释；用户身份、订单事实、业务流程、售后资格、金额、事务和人工协同由确定性系统控制。项目不是完整商城，也不是自主多步 Agent。
+> 项目定位：证据约束 RAG + 统一受控业务工作流 + 有限 Tool Calling + 人在回路。LLM 负责语义理解与解释；商品价格库存、用户身份、订单物流、业务流程、售后资格、金额、事务和人工协同由确定性系统控制。项目不是完整商城，也不是自主多步 Agent。
 
 核心设计可以概括为“概率模型负责理解，确定性系统负责业务权威”：
 
@@ -19,7 +19,7 @@ SmartShop AfterSales 聚焦消费者已经拥有订单之后的高风险售后�
 - 期限、质保和金额由确定性规则与订单金额快照计算；
 - 建单、审批、人工接管和迟到 AI 回复由事务与控制权版本约束。
 
-当前已完成 FastAPI 后端、MySQL 数据层、DeepSeek 受控 Tool Calling、售后 RAG、多轮状态机、多订单候选与安全切换、确定性售后资格和金额快照、退换货工单自动创建、工单事件、消费者取消、人工审批、故障降级、客服原子接管/回复/关闭、消费者端与客服工作台、31 条固定场景评测、请求级观测、异步文档索引和双存储删除。P0 收尾后自动化测试为 126 项，固定评测集本次实测为 31/31。后续开发路线以 [售后闭环开发手册 V2](docs/开发手册-售后闭环V2.md) 为准，P0 增量说明见 [P0 售后能力增强报告](docs/P0_AFTER_SALES_ENHANCEMENT.md)，演示测评见 [P0_DEMO_EVALUATION.md](docs/P0_DEMO_EVALUATION.md)。
+当前已完成 FastAPI 后端、MySQL 数据层、DeepSeek 受控 Tool Calling、三分类 RAG、商品查询与授权优惠报价、多轮状态机、订单与物流查询、退/换/修/补偿工单、退款审批与模拟执行、人工接管、知识/商品/优惠/补偿配置工作台、请求级观测、Celery 异步索引和完整 Docker Compose。当前自动化测试为 154 项；P2 统一固定评测集实测为 18/18，RAG Hit@3/5 均为 1.0。阶段报告见 [P0_UPGRADE_REPORT.md](docs/P0_UPGRADE_REPORT.md)、[P1_REFUND_AUTHORIZATION_REPORT.md](docs/P1_REFUND_AUTHORIZATION_REPORT.md) 和 [P2_SYSTEM_COMPLETION_REPORT.md](docs/P2_SYSTEM_COMPLETION_REPORT.md)。
 
 架构、状态流转和人工接管的详细设计见 [ARCHITECTURE.md](docs/ARCHITECTURE.md)，技术亮点和面试源码证据见 [INTERVIEW_GUIDE.md](docs/INTERVIEW_GUIDE.md)。
 
@@ -108,19 +108,20 @@ Invoke-RestMethod http://127.0.0.1:8000/health
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `APP_NAME` | `SmartShop AfterSales` | 应用显示名称，不能为空 |
+| `APP_NAME` | `SmartShop AI` | 应用显示名称，不能为空 |
 | `APP_ENV` | `development` | `development`、`test` 或 `production` |
 | `DEBUG` | `false` | 是否开启 FastAPI 调试模式 |
 | `LOG_LEVEL` | `INFO` | `DEBUG`、`INFO`、`WARNING`、`ERROR` 或 `CRITICAL` |
 | `DATABASE_URL` | - | SQLAlchemy 数据库连接地址 |
 | `DATABASE_ECHO` | `false` | 是否输出 SQL 调试日志 |
-| `REDIS_URL` | `redis://127.0.0.1:6379/0` | Celery Broker 与结果后端 |
+| `REDIS_URL` | `redis://127.0.0.1:6381/0` | Celery Broker 与结果后端 |
 | `DEEPSEEK_API_KEY` | - | DeepSeek API Key，仅保存在本地 `.env` |
 | `DEEPSEEK_MODEL` | `deepseek-chat` | DeepSeek 对话模型 |
 | `CHROMA_PATH` | `./data/chroma` | Chroma 持久化目录 |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-zh-v1.5` | 中文嵌入模型 |
 | `RAG_TOP_K` | `4` | 默认检索数量 |
 | `RAG_MIN_SIMILARITY` | `0.5` | 无依据拒答的相似度阈值 |
+| `EMBEDDING_WARMUP_ON_STARTUP` | `false` | 启动时预热 BGE；Docker Compose 中为 `true` |
 | `AGENT_MAX_TOOL_ROUNDS` | `2` | 售后工作流工具轮数配置；当前主链只执行有限工具调用 |
 | `AGENT_TOTAL_TIMEOUT_SECONDS` | `180` | 单次售后工作流处理总超时，覆盖 BGE 首次冷加载 |
 
@@ -171,15 +172,15 @@ uv run python -m sample_data.seed
 核心表：
 
 - `users`：消费者与客服账号
-- `products`：演示商品
-- `orders`：带用户归属、签收时间和金额快照的虚构订单
+- `products`：演示商品、参数、价格、库存和上下架状态
+- `orders`：带用户归属、签收时间、金额和模拟物流信息的虚构订单
 - `chat_sessions`：会话状态、槽位、候选订单、当前订单和控制权版本
 - `chat_messages`：对话消息
 - `handoffs`：人工接管记录
 - `documents`：知识文件与索引状态
 - `document_chunks`：Chunk 文本、页码、标题和向量 ID 映射
 - `ingestion_jobs`：异步索引任务状态、进度和结果
-- `after_sales_tickets`：退换货工单、资格结果、金额快照、审批状态和审批人
+- `after_sales_tickets`：退货、换货、维修工单、资格结果、金额快照和审批状态
 - `after_sales_ticket_events`：工单创建、审批、驳回和取消的操作时间线
 
 ## 登录与订单接口
@@ -201,6 +202,13 @@ $headers = @{ Authorization = "Bearer $($login.access_token)" }
 Invoke-RestMethod -Uri http://127.0.0.1:8000/orders/mine -Headers $headers
 Invoke-RestMethod -Uri http://127.0.0.1:8000/orders/1 -Headers $headers
 Invoke-RestMethod -Uri http://127.0.0.1:8000/orders/by-number/A10086 -Headers $headers
+```
+
+查询商品参数、实时价格、库存和商品对比：
+
+```powershell
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/products?query=耳机" -Headers $headers
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/products/compare?ids=1&ids=2" -Headers $headers
 ```
 
 订单查询支持最近订单列表、内部订单 ID 和业务订单号，并且都会与认证用户 ID 联合过滤。其他消费者访问 `consumer_demo` 的订单时返回 `404 order_not_found`，不泄露订单是否存在。Token 具有签名和过期时间，用户被删除或角色变化后，旧 Token 也会失效。
@@ -225,9 +233,9 @@ EMBEDDING_LOCAL_FILES_ONLY=true
 uv run python -m scripts.ingest_demo_docs
 ```
 
-知识文件位于 `data/docs/`，当前共有 19 份虚构消费电子售后资料、74 个 Chunk/向量，覆盖退换货政策、质保规则、配送与运输异常、订单变更、隐私边界、售后处理流程、五个商品说明、五个商品故障排查和一份 PDF 售后 FAQ。脚本可重复运行，重复文档会通过 SHA-256 去重。
+知识文件位于 `data/docs/`，当前共有 20 份虚构资料、77 个 Chunk/向量，分为商品知识、业务政策和客服 SOP 三类。检索先按 `product_id` 和分类过滤，再结合词面重合、领域文件提示和文档多样性重排；商品价格、库存、订单和物流仍只来自 MySQL。
 
-客服可以使用 `POST /knowledge/upload` 同步上传 Markdown、TXT 或 PDF，也可以通过 `GET /knowledge/documents` 查看已索引文档。
+客服可以使用 `POST /knowledge/upload` 同步上传 Markdown、TXT 或 PDF，通过分类字段维护商品知识、业务政策或客服 SOP，也可以通过 `GET /knowledge/documents` 查看已索引文档。
 
 异步索引接口：
 
@@ -292,6 +300,10 @@ POST /api/v1/rag/ask
 | POST | `/after-sales/tickets/{id}/cancel` | 消费者取消待审批工单 |
 | GET | `/agent/after-sales/tickets` | 客服查看待审批工单 |
 | POST | `/agent/after-sales/tickets/{id}/review` | 客服通过或拒绝工单 |
+| GET/POST/PATCH | `/agent/discounts/rules` | 查看、创建和修改售前优惠授权 |
+| POST | `/agent/after-sales/tickets/{id}/refund-execution/retry` | 重试失败的模拟退款 |
+| PATCH | `/knowledge/documents/{id}` | 调整知识分类并重建向量 |
+| GET/PATCH | `/agent/catalog/products/{id}` | 查看和修改商品价格、库存与上下架 |
 
 工单与聊天会话一对一关联，同一用户的订单和申请类型还有活动工单幂等键，跨会话重复申请也会被拦截。消费者只能取消自己的 `pending_approval` 工单。审批使用条件更新，两个客服真正并发审批时只有一个成功。状态更新、事件记录和消费者可见系统消息在同一事务提交。审批通过只代表内部工单审核完成，不执行真实退款、换货或物流操作。
 
@@ -311,16 +323,16 @@ POST /api/v1/rag/ask
 
 ## 评测
 
-固定评测集位于 `data/eval/after_sales_questions.jsonl`，包含 31 条政策、订单、缺失信息、越权、无关、提示注入和相似商品场景。
+售后基线位于 `data/eval/after_sales_questions.jsonl`；P2 统一评测集位于 `data/eval/p2_unified_cases.jsonl`，覆盖售前、商品对比、优惠授权、订单、物流、退换修、售后进度、越权、提示注入和无依据场景。
 
 ```powershell
-uv run python -m scripts.run_eval
+uv run python -m scripts.run_eval --cases data/eval/p2_unified_cases.jsonl
 ```
 
-最新结果写入：
+P2 实际结果写入：
 
-- `data/eval/latest_report.json`
-- `data/eval/latest_report.md`
+- `data/eval/p2_2026-11-23/latest_report.json`
+- `data/eval/p2_2026-11-23/latest_report.md`
 
 评测指标包括意图、订单号、工作流动作、工具安全、RAG Hit@3/5、无依据拒答、任务成功率和 P50/P95。小规模固定集结果不能外推为生产准确率。
 
@@ -352,6 +364,23 @@ uv run python -m scripts.smoke_after_sales
 参数校验失败返回 `validation_error`，未处理异常统一返回 `internal_server_error`，且不会把内部异常详情暴露给客户端。
 
 每个 HTTP 响应包含 `X-Request-ID`。日志记录请求 ID、方法、路径、状态和总耗时；售后工作流分别记录意图、编排、RAG、模型和工具阶段。日志不输出 Token、密码、API Key 或完整 Prompt。
+
+客户端可以传入合法 `X-Request-ID` 做跨服务追踪；响应同时返回 `X-Process-Time-Ms`。
+
+## Docker Compose 完整部署
+
+```powershell
+Copy-Item .env.example .env
+docker compose up --build
+```
+
+Compose 会启动 MySQL、Redis、一次性初始化任务、FastAPI、Celery Worker、消费者端和客服端。初始化任务自动执行迁移、演示数据和知识索引。访问地址：
+
+- API：<http://127.0.0.1:8000>
+- 消费者端：<http://127.0.0.1:8501>
+- 客服端：<http://127.0.0.1:8502>
+
+PyTorch 固定使用 CPU 源，避免在无 GPU 环境下载 CUDA 运行库。
 
 ## 当前目录
 

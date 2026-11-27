@@ -22,10 +22,15 @@ data/runtime_mysql/
 logs/
 *.log
 .workbuddy/
+tmp/
 
 # Personal career drafts
+output/
 导学-SmartShop.md
 面经-SmartShop.md
+导师汇报-SmartShop.md
+导学-SmartShopAI.md
+面经-SmartShopAI.md
 
 # Editors and operating systems
 .idea/

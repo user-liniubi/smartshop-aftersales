@@ -16,4 +16,7 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     broker_connection_retry_on_startup=True,
     result_expires=3600,
+    task_routes={
+        "smartshop.ingest_document": {"queue": "knowledge"},
+    },
 )

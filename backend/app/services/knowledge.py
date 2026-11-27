@@ -9,6 +9,7 @@ from backend.app.core.exceptions import AppError
 from backend.app.models import (
     Document,
     DocumentChunk,
+    KnowledgeCategory,
     KnowledgeDocumentStatus,
     Product,
 )
@@ -42,6 +43,8 @@ class KnowledgeService:
         path: Path,
         original_filename: str,
         product_id: int | None = None,
+        category: KnowledgeCategory = KnowledgeCategory.BUSINESS_POLICY,
+        force_reindex: bool = False,
     ) -> KnowledgeUploadResponse:
         if not path.is_file():
             raise AppError(
@@ -63,10 +66,27 @@ class KnowledgeService:
                 code="product_not_found",
                 message="关联商品不存在",
             )
+        if category == KnowledgeCategory.PRODUCT and product_id is None:
+            raise AppError(
+                status_code=422,
+                code="product_document_requires_product",
+                message="商品知识文档必须关联商品",
+            )
+        if product_id is not None and category != KnowledgeCategory.PRODUCT:
+            raise AppError(
+                status_code=422,
+                code="product_document_category_required",
+                message="关联商品的文档必须使用 product 知识分类",
+            )
 
         content_hash = self._sha256(path)
         existing = self.session.scalar(select(Document).where(Document.sha256 == content_hash))
         if existing is not None:
+            if force_reindex or existing.category != category.value:
+                existing = self.reindex_document(
+                    document_id=existing.id,
+                    category=category,
+                )
             return KnowledgeUploadResponse(
                 document=KnowledgeDocumentResponse.model_validate(existing),
                 chunk_count=len(existing.chunks),
@@ -92,6 +112,7 @@ class KnowledgeService:
             title=parsed.title,
             source_type=parsed.source_type,
             sha256=content_hash,
+            category=category.value,
             status=KnowledgeDocumentStatus.PROCESSING.value,
             content_path=str(path),
         )
@@ -107,6 +128,7 @@ class KnowledgeService:
                 filename=document.filename,
                 title=document.title,
                 product_id=product_id,
+                category=document.category,
                 page=chunk.page,
                 heading=chunk.heading,
             )
@@ -150,12 +172,116 @@ class KnowledgeService:
             duplicate=False,
         )
 
-    def list_documents(self) -> list[Document]:
-        return list(
-            self.session.scalars(
-                select(Document).order_by(Document.created_at.desc(), Document.id.desc())
+    def list_documents(
+        self,
+        *,
+        category: KnowledgeCategory | None = None,
+    ) -> list[Document]:
+        statement = select(Document)
+        if category is not None:
+            statement = statement.where(Document.category == category.value)
+        statement = statement.order_by(Document.created_at.desc(), Document.id.desc())
+        return list(self.session.scalars(statement))
+
+    def reindex_document(
+        self,
+        *,
+        document_id: int,
+        category: KnowledgeCategory,
+    ) -> Document:
+        document = self.session.get(Document, document_id)
+        if document is None:
+            raise AppError(
+                status_code=404,
+                code="document_not_found",
+                message="知识文档不存在",
             )
+        path = Path(document.content_path)
+        if not path.is_file():
+            raise AppError(
+                status_code=404,
+                code="document_file_not_found",
+                message="知识原文件不存在，无法重建索引",
+            )
+        if category == KnowledgeCategory.PRODUCT and document.product_id is None:
+            raise AppError(
+                status_code=422,
+                code="product_document_requires_product",
+                message="商品知识文档必须关联商品",
+            )
+        if document.product_id is not None and category != KnowledgeCategory.PRODUCT:
+            raise AppError(
+                status_code=422,
+                code="product_document_category_required",
+                message="关联商品的文档必须使用 product 知识分类",
+            )
+
+        parsed = parse_document(path)
+        chunks = chunk_sections(
+            parsed.sections,
+            chunk_size=self.settings.rag_chunk_size,
+            overlap=self.settings.rag_chunk_overlap,
         )
+        if not chunks:
+            raise AppError(
+                status_code=400,
+                code="empty_document",
+                message="知识文件没有可索引文本",
+            )
+
+        old_vector_ids = [chunk.vector_id for chunk in document.chunks]
+        self.vector_store.delete(old_vector_ids)
+        document.chunks.clear()
+        self.session.flush()
+        document.title = parsed.title
+        document.source_type = parsed.source_type
+        document.category = category.value
+        document.status = KnowledgeDocumentStatus.PROCESSING.value
+
+        vector_chunks = [
+            VectorChunk(
+                vector_id=f"{document.id}:{chunk.chunk_index}",
+                content=chunk.content,
+                document_id=document.id,
+                chunk_index=chunk.chunk_index,
+                filename=document.filename,
+                title=document.title,
+                product_id=document.product_id,
+                category=document.category,
+                page=chunk.page,
+                heading=chunk.heading,
+            )
+            for chunk in chunks
+        ]
+        try:
+            embeddings = self.embedder.embed_documents([chunk.content for chunk in chunks])
+            for chunk, vector_chunk in zip(chunks, vector_chunks, strict=True):
+                document.chunks.append(
+                    DocumentChunk(
+                        document_id=document.id,
+                        chunk_index=chunk.chunk_index,
+                        page=chunk.page,
+                        heading=chunk.heading,
+                        content=chunk.content,
+                        text_hash=chunk.text_hash,
+                        vector_id=vector_chunk.vector_id,
+                    )
+                )
+            self.vector_store.upsert(vector_chunks, embeddings)
+            document.status = KnowledgeDocumentStatus.INDEXED.value
+            self.session.commit()
+            self.session.refresh(document)
+            return document
+        except Exception as exc:
+            self.session.rollback()
+            self.vector_store.delete([chunk.vector_id for chunk in vector_chunks])
+            if isinstance(exc, AppError):
+                raise
+            raise AppError(
+                status_code=500,
+                code="knowledge_reindex_failed",
+                message="知识文档重建索引失败",
+            ) from None
 
     def delete_document(self, document_id: int) -> None:
         document = self.session.get(Document, document_id)

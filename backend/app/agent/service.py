@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import re
 import time
+from decimal import Decimal
 
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -13,11 +15,13 @@ from backend.app.agent.schemas import (
     GetMyOrderArguments,
     IntentResult,
     IssueType,
+    SearchProductsArguments,
     ToolCallPlan,
     ToolResultSummary,
 )
 from backend.app.agent.tools import (
     GET_MY_ORDER,
+    SEARCH_PRODUCTS,
     ToolContext,
     ToolRegistry,
 )
@@ -28,7 +32,10 @@ from backend.app.models import (
     AfterSalesTicketType,
     ChatSession,
     HandoffSource,
+    KnowledgeCategory,
     Order,
+    Product,
+    RefundExecutionStatus,
     SenderType,
     SessionStatus,
     WorkflowState,
@@ -43,26 +50,34 @@ from backend.app.repositories.handoffs import get_handoff_by_session
 from backend.app.schemas.after_sales import AfterSalesTicketResponse
 from backend.app.schemas.chat import ChatMessageResponse, ChatTurnResponse
 from backend.app.schemas.handoff import HandoffResponse
+from backend.app.schemas.rag import CitationResponse
 from backend.app.services.after_sales_eligibility import (
     AfterSalesEligibility,
     AfterSalesEligibilityService,
 )
 from backend.app.services.after_sales_tickets import AfterSalesTicketService
 from backend.app.services.answers import AnswerService
+from backend.app.services.discounts import DiscountService
 from backend.app.services.handoffs import HandoffService
-from backend.app.services.llm import DeepSeekClient
+from backend.app.services.llm import DeepSeekClient, json_dumps
 from backend.app.services.order_context import OrderContextService
 from backend.app.services.rag import NO_EVIDENCE_ANSWER, RAGContext, RAGService
+from backend.app.services.refund_decisions import RefundDecisionService
 from backend.app.services.rules import AfterSalesRuleService
 
 logger = logging.getLogger(__name__)
 
 _POLICY_INTENTS = {
     AfterSalesIntent.AFTER_SALES_POLICY,
+    AfterSalesIntent.LOGISTICS_QUERY,
     AfterSalesIntent.RETURN_REQUEST,
     AfterSalesIntent.EXCHANGE_REQUEST,
+    AfterSalesIntent.REPAIR_REQUEST,
+    AfterSalesIntent.COMPENSATION_REQUEST,
     AfterSalesIntent.WARRANTY_QUESTION,
+    AfterSalesIntent.DISCOUNT_QUERY,
 }
+_REQUESTED_DISCOUNT = re.compile(r"(?:便宜|优惠|少|减|省)(?:多少)?\s*(\d+(?:\.\d{1,2})?)\s*元")
 
 
 class AfterSalesAgentService:
@@ -90,6 +105,7 @@ class AfterSalesAgentService:
         self.rules = rules or AfterSalesRuleService()
         self.order_context = OrderContextService(session)
         self.eligibility = AfterSalesEligibilityService()
+        self.refund_decisions = RefundDecisionService(session=session, llm=llm)
         self.answer_service = AnswerService(llm)
 
     async def handle_message(
@@ -208,6 +224,20 @@ class AfterSalesAgentService:
 
         try:
             async with asyncio.timeout(self.settings.agent_total_timeout_seconds):
+                if decision.action.value == "product_query":
+                    return await self._handle_product_task(
+                        chat_session=chat_session,
+                        user_message=user_message,
+                        content=content,
+                        intent_result=intent_result,
+                        expected_control_version=expected_control_version,
+                    )
+                if decision.action.value == "after_sales_progress":
+                    return self._handle_after_sales_progress_task(
+                        chat_session=chat_session,
+                        user_message=user_message,
+                        expected_control_version=expected_control_version,
+                    )
                 if decision.action.value == "query_order":
                     return await self._handle_order_task(
                         chat_session=chat_session,
@@ -251,6 +281,285 @@ class AfterSalesAgentService:
                 reason="AI 处理出现异常，需要人工客服继续处理",
                 expected_control_version=expected_control_version,
             )
+
+    async def _handle_product_task(
+        self,
+        *,
+        chat_session: ChatSession,
+        user_message,
+        content: str,
+        intent_result: IntentResult,
+        expected_control_version: int,
+    ) -> ChatTurnResponse:
+        context = ToolContext(
+            session=self.session,
+            session_id=chat_session.id,
+            user_id=chat_session.user_id,
+            rag_service=self.rag_service,
+        )
+        arguments = SearchProductsArguments(query=content, limit=4)
+        tool_result = self.tools.execute(
+            context=context,
+            tool_name=SEARCH_PRODUCTS,
+            arguments=arguments.model_dump(mode="json"),
+        )
+        products = tool_result.result.get("products", [])
+        if not products:
+            return self._finish_with_answer(
+                chat_session=chat_session,
+                user_message=user_message,
+                answer="当前商品目录中没有找到与问题匹配的商品。",
+                rag_context=RAGContext(
+                    evidence="",
+                    citations=[],
+                    chunks=(),
+                    grounded=False,
+                ),
+                expected_control_version=expected_control_version,
+                tool_results=[
+                    ToolResultSummary(
+                        tool_name=tool_result.tool_name,
+                        status="success",
+                        result=tool_result.result,
+                    )
+                ],
+            )
+
+        if intent_result.intent == AfterSalesIntent.DISCOUNT_QUERY:
+            return await self._handle_discount_task(
+                chat_session=chat_session,
+                user_message=user_message,
+                content=content,
+                products=products,
+                expected_control_version=expected_control_version,
+                search_tool_name=tool_result.tool_name,
+                search_result=tool_result.result,
+            )
+
+        evidence_parts = [f"商品实时事实：{json_dumps(products)}"]
+        citations: list[CitationResponse] = []
+        seen_citations: set[str] = set()
+        for product in products:
+            rag_context = await self.rag_service.retrieve(
+                question=f"{content} {product['name']} 商品说明",
+                product_id=product["id"],
+                category=KnowledgeCategory.PRODUCT,
+            )
+            if rag_context.evidence:
+                evidence_parts.append(
+                    f"商品 {product['name']} 的知识证据：\n{rag_context.evidence}"
+                )
+            for citation in rag_context.citations:
+                if citation.chunk_id not in seen_citations:
+                    citations.append(citation)
+                    seen_citations.add(citation.chunk_id)
+
+        answer = await self.llm.generate_answer(
+            question=content,
+            evidence="\n\n".join(evidence_parts),
+        )
+        if not self._control_allowed(
+            chat_session,
+            expected_control_version=expected_control_version,
+        ):
+            return self._waiting_for_agent_response(
+                chat_session=chat_session,
+                user_message=user_message,
+            )
+        return self._finish_with_answer(
+            chat_session=chat_session,
+            user_message=user_message,
+            answer=answer,
+            rag_context=RAGContext(
+                evidence="\n\n".join(evidence_parts),
+                citations=citations,
+                chunks=(),
+                grounded=True,
+            ),
+            expected_control_version=expected_control_version,
+            tool_results=[
+                ToolResultSummary(
+                    tool_name=tool_result.tool_name,
+                    status="success",
+                    result=tool_result.result,
+                )
+            ],
+        )
+
+    async def _handle_discount_task(
+        self,
+        *,
+        chat_session: ChatSession,
+        user_message,
+        content: str,
+        products: list[dict],
+        expected_control_version: int,
+        search_tool_name: str,
+        search_result: dict,
+    ) -> ChatTurnResponse:
+        if len(products) != 1:
+            names = "、".join(product["name"] for product in products[:4])
+            answer = (
+                f"请明确要咨询优惠的商品。当前匹配到：{names}。"
+                if products
+                else "当前商品目录中没有找到匹配商品。"
+            )
+            return self._finish_with_answer(
+                chat_session=chat_session,
+                user_message=user_message,
+                answer=answer,
+                rag_context=RAGContext(
+                    evidence="",
+                    citations=[],
+                    chunks=(),
+                    grounded=False,
+                ),
+                expected_control_version=expected_control_version,
+                tool_results=[
+                    ToolResultSummary(
+                        tool_name=search_tool_name,
+                        status="success",
+                        result=search_result,
+                    )
+                ],
+            )
+
+        product_facts = products[0]
+        product_id = int(product_facts["id"])
+        product = self.session.get(Product, product_id)
+        if product is None:
+            raise AppError(
+                status_code=404,
+                code="product_not_found",
+                message="商品不存在",
+            )
+        rag_context = await self.rag_service.retrieve(
+            question=f"{content} 优惠授权 报价政策",
+            product_id=product_id,
+            category=KnowledgeCategory.BUSINESS_POLICY,
+        )
+        if not rag_context.grounded:
+            return self._create_handoff_turn(
+                chat_session=chat_session,
+                user_message=user_message,
+                reason="没有可引用的优惠政策，无法生成授权报价",
+                source=HandoffSource.RULE,
+                answer="当前没有足够优惠政策依据生成报价，已申请人工客服核实。",
+                expected_control_version=expected_control_version,
+                rag_context=rag_context,
+                tool_results=[
+                    ToolResultSummary(
+                        tool_name=search_tool_name,
+                        status="success",
+                        result=search_result,
+                    )
+                ],
+            )
+        match = _REQUESTED_DISCOUNT.search(content)
+        requested = Decimal(match.group(1)) if match else None
+        try:
+            result = DiscountService(self.session).create_quote(
+                session_id=chat_session.id,
+                user_id=chat_session.user_id,
+                product=product,
+                citations=rag_context.citations,
+                requested_discount_amount=requested,
+            )
+        except AppError as exc:
+            return self._create_handoff_turn(
+                chat_session=chat_session,
+                user_message=user_message,
+                reason=exc.message,
+                source=HandoffSource.RULE,
+                answer=f"{exc.message}，已申请人工客服继续协商。",
+                expected_control_version=expected_control_version,
+                rag_context=rag_context,
+                tool_results=[
+                    ToolResultSummary(
+                        tool_name=search_tool_name,
+                        status="success",
+                        result=search_result,
+                    )
+                ],
+            )
+
+        quote = result.quote
+        answer = (
+            f"{product.name} 当前库存 {product.stock_quantity} 件，标价 "
+            f"{quote.unit_price} {quote.currency}。系统在商家授权范围内给出的"
+            f"模拟优惠为 {quote.discount_amount} 元，报价 "
+            f"{quote.final_price} {quote.currency}。优惠报价单号 "
+            f"{quote.quote_no}，30 分钟内有效。该报价不创建订单，也不锁定库存。"
+        )
+        if result.exceeds_authorization:
+            answer += (
+                f" 你希望的优惠金额为 {result.requested_discount_amount} 元，"
+                f"超过当前授权上限 {result.authorized_discount_amount} 元，"
+                "已转人工进一步协商。"
+            )
+            return self._create_handoff_turn(
+                chat_session=chat_session,
+                user_message=user_message,
+                reason="消费者期望优惠超过商家授权上限",
+                source=HandoffSource.RULE,
+                answer=answer,
+                expected_control_version=expected_control_version,
+                rag_context=rag_context,
+                tool_results=[
+                    ToolResultSummary(
+                        tool_name=search_tool_name,
+                        status="success",
+                        result=search_result,
+                    )
+                ],
+            )
+        return self._finish_with_answer(
+            chat_session=chat_session,
+            user_message=user_message,
+            answer=answer,
+            rag_context=rag_context,
+            expected_control_version=expected_control_version,
+            tool_results=[
+                ToolResultSummary(
+                    tool_name=search_tool_name,
+                    status="success",
+                    result=search_result,
+                )
+            ],
+        )
+
+    def _handle_after_sales_progress_task(
+        self,
+        *,
+        chat_session: ChatSession,
+        user_message,
+        expected_control_version: int,
+    ) -> ChatTurnResponse:
+        tickets = AfterSalesTicketService(self.session).list_for_user(
+            user_id=chat_session.user_id,
+        )
+        if not tickets:
+            answer = "当前账号还没有售后工单。"
+        else:
+            lines = ["你当前的售后工单："]
+            for ticket in tickets[:5]:
+                lines.append(
+                    f"- {ticket.ticket_no}｜{ticket.request_type}｜{ticket.status}"
+                    f"｜创建时间：{ticket.created_at.isoformat(timespec='minutes')}"
+                )
+            answer = "\n".join(lines)
+        return self._finish_with_answer(
+            chat_session=chat_session,
+            user_message=user_message,
+            answer=answer,
+            rag_context=RAGContext(
+                evidence="",
+                citations=[],
+                chunks=(),
+                grounded=False,
+            ),
+            expected_control_version=expected_control_version,
+        )
 
     async def _handle_order_task(
         self,
@@ -346,16 +655,55 @@ class AfterSalesAgentService:
             target=WorkflowState.CHECKING_POLICY,
         )
 
+        if intent_result.intent == AfterSalesIntent.LOGISTICS_QUERY:
+            rag_context = await self._retrieve_policy(
+                content=content,
+                intent_result=intent_result,
+                product_id=product_id,
+            )
+            answer = await self.answer_service.generate(
+                question=content,
+                intent=intent_result.intent.value,
+                order_facts=order_facts,
+                rag_context=rag_context,
+                history=self._history_for_model(chat_session.id),
+                eligibility=None,
+            )
+            return self._finish_with_answer(
+                chat_session=chat_session,
+                user_message=user_message,
+                answer=answer,
+                rag_context=rag_context,
+                expected_control_version=expected_control_version,
+                tool_results=[
+                    ToolResultSummary(
+                        tool_name=tool_result.tool_name,
+                        status="success",
+                        result=order_facts,
+                    )
+                ],
+            )
+
         eligibility: AfterSalesEligibility | None = None
         request_type: AfterSalesTicketType | None = None
         if intent_result.intent in {
             AfterSalesIntent.RETURN_REQUEST,
             AfterSalesIntent.EXCHANGE_REQUEST,
+            AfterSalesIntent.REPAIR_REQUEST,
+            AfterSalesIntent.COMPENSATION_REQUEST,
         }:
             request_type = (
                 AfterSalesTicketType.RETURN
                 if intent_result.intent == AfterSalesIntent.RETURN_REQUEST
-                else AfterSalesTicketType.EXCHANGE
+                else (
+                    AfterSalesTicketType.EXCHANGE
+                    if intent_result.intent == AfterSalesIntent.EXCHANGE_REQUEST
+                    else (
+                        AfterSalesTicketType.REPAIR
+                        if intent_result.intent == AfterSalesIntent.REPAIR_REQUEST
+                        else AfterSalesTicketType.COMPENSATION
+                    )
+                )
             )
             eligibility = self.eligibility.evaluate(
                 order=order,
@@ -432,6 +780,90 @@ class AfterSalesAgentService:
                 ],
             )
 
+        if (
+            intent_result.intent == AfterSalesIntent.COMPENSATION_REQUEST
+            and intent_result.slots.submit_requested is True
+        ):
+            issue_description = intent_result.slots.issue_description
+            if eligibility is None or not issue_description:
+                raise AppError(
+                    status_code=500,
+                    code="compensation_context_missing",
+                    message="补偿申请缺少资格或问题信息",
+                )
+            refund_decision = await self.refund_decisions.evaluate(
+                order=order,
+                issue_description=issue_description,
+                rag_context=rag_context,
+            )
+            compensation_ticket, agent_decision, auto_approved = AfterSalesTicketService(
+                self.session
+            ).create_compensation_for_session(
+                chat_session=chat_session,
+                order=order,
+                issue_description=issue_description,
+                citations=rag_context.citations,
+                eligibility=eligibility,
+                decision=refund_decision,
+            )
+            if auto_approved:
+                execution = compensation_ticket.refund_execution
+                if (
+                    execution is not None
+                    and execution.status == RefundExecutionStatus.SUCCESS.value
+                ):
+                    answer = (
+                        f"系统已在商家授权范围内通过部分补偿 "
+                        f"{refund_decision.suggested_amount} {eligibility.currency}。"
+                        f"模拟退款执行成功，流水号 {execution.provider_reference}。"
+                    )
+                elif execution is not None:
+                    answer = (
+                        f"系统已在商家授权范围内通过部分补偿 "
+                        f"{refund_decision.suggested_amount} {eligibility.currency}，"
+                        "但模拟退款执行失败，已进入客服重试队列。"
+                    )
+                else:
+                    answer = (
+                        f"系统已在商家授权范围内通过部分补偿 "
+                        f"{refund_decision.suggested_amount} {eligibility.currency}，"
+                        "退款执行记录正在生成。"
+                    )
+                return self._finish_with_answer(
+                    chat_session=chat_session,
+                    user_message=user_message,
+                    answer=answer,
+                    rag_context=rag_context,
+                    eligibility=eligibility,
+                    expected_control_version=expected_control_version,
+                    after_sales_ticket=compensation_ticket,
+                    ticket_created=True,
+                    tool_results=[
+                        ToolResultSummary(
+                            tool_name=tool_result.tool_name,
+                            status="success",
+                            result=order_facts,
+                        )
+                    ],
+                )
+            return self._create_handoff_turn(
+                chat_session=chat_session,
+                user_message=user_message,
+                reason=refund_decision.analysis,
+                source=HandoffSource.RULE,
+                answer="补偿建议未满足自动审批条件，已生成待人工审核工单。",
+                eligibility=eligibility,
+                expected_control_version=expected_control_version,
+                after_sales_ticket=compensation_ticket,
+                tool_results=[
+                    ToolResultSummary(
+                        tool_name=tool_result.tool_name,
+                        status="success",
+                        result=order_facts,
+                    )
+                ],
+            )
+
         ticket: AfterSalesTicket | None = None
         ticket_created = False
         if (
@@ -439,6 +871,7 @@ class AfterSalesAgentService:
             in {
                 AfterSalesIntent.RETURN_REQUEST,
                 AfterSalesIntent.EXCHANGE_REQUEST,
+                AfterSalesIntent.REPAIR_REQUEST,
             }
             and intent_result.slots.submit_requested is True
         ):
@@ -643,6 +1076,11 @@ class AfterSalesAgentService:
         return await self.rag_service.retrieve(
             question=query.strip(),
             product_id=product_id,
+            categories=(
+                KnowledgeCategory.BUSINESS_POLICY,
+                KnowledgeCategory.SUPPORT_SOP,
+                KnowledgeCategory.PRODUCT,
+            ),
         )
 
     def _finish_with_answer(
@@ -713,6 +1151,7 @@ class AfterSalesAgentService:
         expected_control_version: int | None = None,
         after_sales_ticket: AfterSalesTicket | None = None,
         tool_results: list[ToolResultSummary] | None = None,
+        rag_context: RAGContext | None = None,
     ) -> ChatTurnResponse:
         if expected_control_version is not None and not self._control_allowed(
             chat_session,
@@ -734,6 +1173,11 @@ class AfterSalesAgentService:
                 session_id=chat_session.id,
                 sender_type=SenderType.ASSISTANT.value,
                 content=answer,
+                citations=(
+                    [citation.model_dump(mode="json") for citation in rag_context.citations]
+                    if rag_context is not None
+                    else []
+                ),
             )
         return ChatTurnResponse(
             user_message=ChatMessageResponse.model_validate(user_message),

@@ -41,11 +41,15 @@ def test_get_my_order_returns_safe_owned_order_facts(
         invocation = session.scalar(select(ToolInvocation))
 
     assert result.result == {
+        "carrier": "顺丰速运",
+        "logistics_status": "delivered",
+        "logistics_updated_at": result.result["logistics_updated_at"],
         "order_id": 1,
         "order_no": "A10086",
         "status": "delivered",
         "product_id": 1,
         "product_name": "SmartShop 降噪耳机 Pro",
+        "tracking_no": "SFA10086",
     }
     assert invocation is not None
     assert invocation.status == "success"
@@ -165,6 +169,7 @@ def test_policy_tool_returns_grounded_citations(
             question: str,
             product_id: int | None = None,
             top_k: int | None = None,
+            categories: tuple | None = None,
         ) -> RAGContext:
             citation = CitationResponse(
                 document_id=2,

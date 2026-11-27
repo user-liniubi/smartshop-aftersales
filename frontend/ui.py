@@ -150,6 +150,27 @@ AFTER_SALES_TICKET_STATUS_LABELS = {
 AFTER_SALES_TICKET_TYPE_LABELS = {
     "return": "退货",
     "exchange": "换货",
+    "repair": "维修",
+    "compensation": "部分补偿",
+}
+
+AGENT_DECISION_STATUS_LABELS = {
+    "auto_approved": "授权内自动通过",
+    "manually_approved": "人工审批通过",
+    "manual_review": "需人工审核",
+    "rejected": "已拒绝",
+}
+
+REFUND_EXECUTION_STATUS_LABELS = {
+    "pending": "等待执行",
+    "success": "执行成功",
+    "failed": "执行失败",
+}
+
+KNOWLEDGE_CATEGORY_LABELS = {
+    "product": "商品知识",
+    "business_policy": "业务政策",
+    "support_sop": "客服 SOP",
 }
 
 AFTER_SALES_TICKET_EVENT_LABELS = {
@@ -195,6 +216,18 @@ def after_sales_ticket_type_label(value: str) -> str:
     return AFTER_SALES_TICKET_TYPE_LABELS.get(value, value)
 
 
+def agent_decision_status_label(value: str) -> str:
+    return AGENT_DECISION_STATUS_LABELS.get(value, value)
+
+
+def refund_execution_status_label(value: str) -> str:
+    return REFUND_EXECUTION_STATUS_LABELS.get(value, value)
+
+
+def knowledge_category_label(value: str) -> str:
+    return KNOWLEDGE_CATEGORY_LABELS.get(value, value)
+
+
 def derive_session_title(messages: list[dict[str, Any]], session_id: int) -> str:
     for message in messages:
         if message.get("sender_type") == "consumer" and message.get("content"):
@@ -216,7 +249,7 @@ def render_message(message: dict[str, Any], *, staff_view: bool = False) -> None
     if sender == "agent":
         label = "人工客服"
     elif sender == "assistant":
-        label = "SmartShop AfterSales"
+        label = "SmartShop AI"
     elif sender == "system":
         label = "系统"
     else:
@@ -237,6 +270,7 @@ def render_message(message: dict[str, Any], *, staff_view: bool = False) -> None
                     st.markdown(
                         f"**{citation.get('title', '知识片段')}** "
                         f"· `{citation.get('filename', '')}`"
+                        f" · {knowledge_category_label(citation.get('category') or '')}"
                     )
                     if citation.get("heading"):
                         st.caption(citation["heading"])
@@ -293,6 +327,22 @@ def render_after_sales_ticket(
         st.caption(f"资格规则：{ticket['eligibility_reason']}")
     if ticket.get("review_note"):
         st.caption(f"审批意见：{ticket['review_note']}")
+    decision = ticket.get("agent_decision")
+    if decision:
+        st.caption(
+            f"Agent 补偿建议：{decision.get('suggested_amount')} "
+            f"{ticket.get('currency', 'CNY')} · "
+            f"{agent_decision_status_label(decision.get('decision_status', ''))}"
+        )
+    execution = ticket.get("refund_execution")
+    if execution:
+        st.caption(
+            f"退款执行：{refund_execution_status_label(execution.get('status', ''))} · "
+            f"{execution.get('amount')} {execution.get('currency', 'CNY')}"
+            f" · 第 {execution.get('attempt_count', 1)} 次"
+        )
+        if execution.get("failure_message"):
+            st.caption(f"失败原因：{execution['failure_message']}")
     if events:
         with st.expander("查看处理记录", icon=":material/timeline:"):
             for event in events:

@@ -45,6 +45,9 @@ class BgeEmbeddingProvider:
         )
         return embeddings.tolist()
 
+    def warmup(self) -> None:
+        self.embed_query("SmartShop embedding warmup")
+
     def embed_query(self, query: str) -> list[float]:
         embeddings = self._get_model().encode(
             [f"{QUERY_INSTRUCTION}{query}"],

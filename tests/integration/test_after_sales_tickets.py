@@ -107,12 +107,15 @@ def test_after_sales_ticket_is_idempotent_and_reviewable(
     assert approved.status_code == 200
     assert approved.json()["status"] == "approved"
     assert approved.json()["reviewer_id"] is not None
+    assert approved.json()["refund_execution"]["status"] == "success"
+    assert approved.json()["refund_execution"]["amount"] == "899.00"
     assert reviewed_again.status_code == 409
     assert reviewed_again.json()["error"]["code"] == ("after_sales_ticket_already_reviewed")
     assert mine_after_review.json()[0]["status"] == "approved"
     assert [event["event_type"] for event in events.json()] == [
         "created",
         "approved",
+        "system_note",
     ]
     with test_database.session_factory() as session:
         system_messages = list(
@@ -123,9 +126,10 @@ def test_after_sales_ticket_is_idempotent_and_reviewable(
                 )
             )
         )
-    assert len(system_messages) == 2
+    assert len(system_messages) == 3
     assert "已创建" in system_messages[0].content
     assert "已通过审批" in system_messages[1].content
+    assert "模拟退款已执行成功" in system_messages[2].content
 
 
 def test_rejecting_after_sales_ticket_requires_note(

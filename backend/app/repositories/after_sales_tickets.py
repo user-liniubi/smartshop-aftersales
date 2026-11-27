@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -87,31 +88,39 @@ def review_ticket_atomic(
     reviewer_id: int,
     decision: AfterSalesTicketStatus,
     review_note: str,
+    refund_amount: Decimal | None = None,
 ) -> AfterSalesTicket | None:
+    values = {
+        "status": decision.value,
+        "reviewer_id": reviewer_id,
+        "review_note": review_note,
+        "reviewed_at": datetime.now(UTC),
+        "active_dedup_key": (
+            None
+            if decision == AfterSalesTicketStatus.REJECTED
+            else AfterSalesTicket.active_dedup_key
+        ),
+    }
+    if refund_amount is not None:
+        values["refund_amount"] = refund_amount
     result = session.execute(
         update(AfterSalesTicket)
         .where(
             AfterSalesTicket.id == ticket_id,
             AfterSalesTicket.status == AfterSalesTicketStatus.PENDING_APPROVAL.value,
         )
-        .values(
-            status=decision.value,
-            reviewer_id=reviewer_id,
-            review_note=review_note,
-            reviewed_at=datetime.now(UTC),
-            active_dedup_key=(
-                None
-                if decision == AfterSalesTicketStatus.REJECTED
-                else AfterSalesTicket.active_dedup_key
-            ),
-        )
+        .values(**values)
         .execution_options(synchronize_session=False)
     )
     if result.rowcount != 1:
         session.flush()
         return None
     session.flush()
-    return session.get(AfterSalesTicket, ticket_id)
+    return session.scalar(
+        select(AfterSalesTicket)
+        .where(AfterSalesTicket.id == ticket_id)
+        .execution_options(populate_existing=True)
+    )
 
 
 def cancel_ticket_atomic(

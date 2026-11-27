@@ -1,5 +1,5 @@
 [project]
-name = "smartshop-aftersales"
+name = "smartshop-ai"
 version = "1.0.0"
 description = "Trustworthy consumer electronics after-sales decision system with evidence-grounded RAG and human-in-the-loop workflow"
 readme = "README.md"
@@ -19,6 +19,7 @@ dependencies = [
     "sentence-transformers>=3.3,<6",
     "sqlalchemy>=2.0,<2.1",
     "streamlit>=1.57,<2",
+    "torch>=2.8,<3",
     "uvicorn[standard]>=0.34,<1",
 ]
 
@@ -31,6 +32,14 @@ dev = [
 
 [tool.uv]
 package = false
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -231,3 +231,36 @@ def test_merge_slots_ignores_invalid_existing_values():
     assert result.order_no == "A10086"
     assert result.issue_type is None
     assert result.issue_description == "左耳没有声音"
+
+
+def test_pre_sales_and_progress_intent_fallbacks():
+    client = FakeIntentClient("invalid")
+
+    compare = asyncio.run(IntentService(client).extract(content="耳机和键盘对比一下有什么区别"))
+    logistics = asyncio.run(IntentService(client).extract(content="订单 A10087 的物流到哪了"))
+    progress = asyncio.run(IntentService(client).extract(content="我的售后进度怎么样了"))
+    repair = asyncio.run(IntentService(client).extract(content="耳机坏了，想申请维修"))
+
+    assert compare.intent == AfterSalesIntent.PRODUCT_COMPARE
+    assert logistics.intent == AfterSalesIntent.LOGISTICS_QUERY
+    assert progress.intent == AfterSalesIntent.AFTER_SALES_PROGRESS
+    assert repair.intent == AfterSalesIntent.REPAIR_REQUEST
+    assert repair.slots.submit_requested is True
+
+
+def test_explicit_product_spec_query_is_not_downgraded_to_policy():
+    client = FakeIntentClient(
+        '{"intent":"after_sales_policy","slots":{"issue_type":"product_usage"},"confidence":0.9}'
+    )
+
+    result = asyncio.run(IntentService(client).extract(content="机械键盘的参数和连接方式是什么？"))
+
+    assert result.intent == AfterSalesIntent.PRODUCT_QUERY
+
+
+def test_generic_after_sales_request_asks_for_more_context():
+    client = FakeIntentClient('{"intent":"after_sales_policy","slots":{},"confidence":0.9}')
+
+    result = asyncio.run(IntentService(client).extract(content="我想申请售后"))
+
+    assert result.intent == AfterSalesIntent.UNKNOWN

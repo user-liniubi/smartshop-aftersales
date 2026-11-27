@@ -13,8 +13,11 @@ from backend.app.repositories.chat import get_session_owned_by_user
 
 _REQUIRED_SLOTS: dict[AfterSalesIntent, tuple[str, ...]] = {
     AfterSalesIntent.ORDER_QUERY: ("order_no",),
+    AfterSalesIntent.LOGISTICS_QUERY: ("order_no",),
     AfterSalesIntent.RETURN_REQUEST: ("order_no", "issue_description"),
     AfterSalesIntent.EXCHANGE_REQUEST: ("order_no", "issue_description"),
+    AfterSalesIntent.REPAIR_REQUEST: ("order_no", "issue_description"),
+    AfterSalesIntent.COMPENSATION_REQUEST: ("order_no", "issue_description"),
 }
 
 _ALLOWED_TRANSITIONS: dict[WorkflowState, frozenset[WorkflowState]] = {
@@ -111,9 +114,28 @@ class AfterSalesOrchestrator:
             )
 
         if result.intent in {
+            AfterSalesIntent.PRODUCT_QUERY,
+            AfterSalesIntent.PRODUCT_COMPARE,
+            AfterSalesIntent.DISCOUNT_QUERY,
+        }:
+            return OrchestrationDecision(
+                action=WorkflowAction.PRODUCT_QUERY,
+                workflow_state=WorkflowState.CHECKING_POLICY,
+            )
+
+        if result.intent == AfterSalesIntent.AFTER_SALES_PROGRESS:
+            return OrchestrationDecision(
+                action=WorkflowAction.AFTER_SALES_PROGRESS,
+                workflow_state=WorkflowState.CHECKING_POLICY,
+            )
+
+        if result.intent in {
             AfterSalesIntent.ORDER_QUERY,
+            AfterSalesIntent.LOGISTICS_QUERY,
             AfterSalesIntent.RETURN_REQUEST,
             AfterSalesIntent.EXCHANGE_REQUEST,
+            AfterSalesIntent.REPAIR_REQUEST,
+            AfterSalesIntent.COMPENSATION_REQUEST,
         } or (result.intent == AfterSalesIntent.WARRANTY_QUESTION and result.slots.order_no):
             return OrchestrationDecision(
                 action=WorkflowAction.QUERY_ORDER,

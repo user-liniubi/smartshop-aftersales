@@ -11,7 +11,7 @@ from backend.app.api.rag_dependencies import get_knowledge_service
 from backend.app.core.config import Settings, get_settings
 from backend.app.core.exceptions import AppError
 from backend.app.db.session import get_db
-from backend.app.models import IngestionJobStatus
+from backend.app.models import Document, IngestionJobStatus, KnowledgeCategory
 from backend.app.rag.parsing import SUPPORTED_EXTENSIONS
 from backend.app.repositories.ingestion_jobs import (
     create_ingestion_job,
@@ -20,9 +20,11 @@ from backend.app.repositories.ingestion_jobs import (
 from backend.app.schemas.knowledge import (
     AsyncKnowledgeUploadResponse,
     IngestionJobResponse,
+    KnowledgeCategoryUpdate,
     KnowledgeDocumentResponse,
     KnowledgeUploadResponse,
 )
+from backend.app.services.config_audit import record_config_change
 from backend.app.services.knowledge import KnowledgeService
 from backend.app.workers.tasks import ingest_document_task
 
@@ -62,6 +64,10 @@ def upload_document(
     service: Annotated[KnowledgeService, Depends(get_knowledge_service)],
     settings: Annotated[Settings, Depends(get_settings)],
     product_id: Annotated[int | None, Form(gt=0)] = None,
+    category: Annotated[
+        KnowledgeCategory,
+        Form(),
+    ] = KnowledgeCategory.BUSINESS_POLICY,
 ) -> KnowledgeUploadResponse:
     """Upload and synchronously index one knowledge document."""
 
@@ -72,6 +78,7 @@ def upload_document(
             path=target_path,
             original_filename=filename,
             product_id=product_id,
+            category=category,
         )
         if result.duplicate:
             target_path.unlink(missing_ok=True)
@@ -92,6 +99,10 @@ def upload_document_async(
     session: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings)],
     product_id: Annotated[int | None, Form(gt=0)] = None,
+    category: Annotated[
+        KnowledgeCategory,
+        Form(),
+    ] = KnowledgeCategory.BUSINESS_POLICY,
 ) -> AsyncKnowledgeUploadResponse:
     filename, target_path = _persist_upload(file=file, settings=settings)
     task_id = uuid4().hex
@@ -101,6 +112,7 @@ def upload_document_async(
         filename=filename,
         source_path=str(target_path),
         product_id=product_id,
+        category=category.value,
     )
 
     try:
@@ -142,10 +154,41 @@ def get_ingestion_job_status(
 def list_documents(
     current_agent: AgentUser,
     service: Annotated[KnowledgeService, Depends(get_knowledge_service)],
+    category: KnowledgeCategory | None = None,
 ) -> list[KnowledgeDocumentResponse]:
     return [
-        KnowledgeDocumentResponse.model_validate(document) for document in service.list_documents()
+        KnowledgeDocumentResponse.model_validate(document)
+        for document in service.list_documents(category=category)
     ]
+
+
+@router.patch(
+    "/documents/{document_id}",
+    response_model=KnowledgeDocumentResponse,
+)
+def update_document_category(
+    document_id: int,
+    request: KnowledgeCategoryUpdate,
+    current_agent: AgentUser,
+    service: Annotated[KnowledgeService, Depends(get_knowledge_service)],
+) -> KnowledgeDocumentResponse:
+    existing = service.session.get(Document, document_id)
+    before_category = getattr(existing, "category", None)
+    document = service.reindex_document(
+        document_id=document_id,
+        category=request.category,
+    )
+    record_config_change(
+        service.session,
+        actor_id=current_agent.id,
+        entity_type="knowledge_document",
+        entity_id=document.id,
+        action="update_category",
+        before={"category": before_category},
+        after={"category": document.category},
+    )
+    service.session.commit()
+    return KnowledgeDocumentResponse.model_validate(document)
 
 
 @router.delete("/documents/{document_id}", status_code=204)

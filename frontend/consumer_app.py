@@ -32,7 +32,7 @@ except ModuleNotFoundError:
     )
 
 st.set_page_config(
-    page_title="SmartShop AfterSales 售后决策助手",
+    page_title="SmartShop AI 智能客服",
     page_icon=":material/support_agent:",
     layout="wide",
 )
@@ -58,7 +58,7 @@ def show_error(error: ApiError) -> None:
 if st.session_state.consumer_token is None:
     username, password, submitted = render_login_screen(
         role="消费者",
-        brand_title="SmartShop AfterSales",
+        brand_title="SmartShop AI",
         subtitle="面向消费电子产品，从已有订单开始处理退货、换货、保修和产品使用问题。",
         account_hint="演示账号：consumer_demo / Demo123!",
     )
@@ -92,7 +92,7 @@ def render_live_workspace() -> None:
         left, center, right = st.columns([0.22, 0.54, 0.24], gap="medium")
         with left:
             with st.container(key="sm-nav"):
-                st.markdown("### :material/support_agent: SmartShop AfterSales")
+                st.markdown("### :material/support_agent: SmartShop AI")
                 st.caption("消费电子售后")
                 if st.button("新建会话", icon=":material/add:", width="stretch"):
                     created = client().create_session()
@@ -110,7 +110,7 @@ def render_live_workspace() -> None:
             with st.container(key="sm-chat"):
                 st.info(
                     "创建第一个售后会话，描述订单和问题后即可开始。",
-                    title="欢迎使用 SmartShop AfterSales",
+                    title="欢迎使用 SmartShop AI",
                 )
         with right:
             with st.container(key="sm-detail"):
@@ -146,7 +146,7 @@ def render_live_workspace() -> None:
     with left:
         with st.container(key="sm-nav"):
             with st.container(key="brand-block"):
-                st.markdown("### :material/support_agent: SmartShop AfterSales")
+                st.markdown("### :material/support_agent: SmartShop AI")
                 st.caption("消费电子售后")
             if st.button(
                 "新建会话",
@@ -195,7 +195,7 @@ def render_live_workspace() -> None:
     with center:
         with st.container(key="sm-chat"):
             with st.container(horizontal=True, horizontal_alignment="distribute"):
-                st.markdown("### :material/auto_awesome: SmartShop AfterSales")
+                st.markdown("### :material/auto_awesome: SmartShop AI")
                 st.markdown(":green-badge[在线]")
             st.caption("消费电子产品订单、售后政策与人工客服协同处理")
 
@@ -216,11 +216,16 @@ def render_live_workspace() -> None:
             with st.container(key="message-scroll", height=500):
                 if not messages:
                     with st.container(key="welcome-card"):
-                        st.markdown("### 你好，我是 SmartShop AfterSales")
+                        st.markdown("### 你好，我是 SmartShop AI")
                         st.write("告诉我订单号和消费电子产品的问题，我会核验订单并检索售后政策。")
                     st.caption("你可以从下面几个问题开始：")
                     suggestions = (
                         ("耳机坏了怎么退货？", "耳机坏了，想退货"),
+                        ("耳机价格和库存", "降噪耳机多少钱，还有库存吗？"),
+                        ("耳机优惠咨询", "降噪耳机能优惠50元吗？"),
+                        ("对比耳机和键盘", "耳机和机械键盘哪个更适合办公？"),
+                        ("查物流进度", "查一下订单 A10087 的物流进度"),
+                        ("查售后进度", "我的售后进度怎么样了？"),
                         ("查订单 A10086", "查一下订单 A10086 的状态"),
                         ("保修政策是什么？", "降噪耳机保修多久？"),
                     )
@@ -263,7 +268,7 @@ def render_live_workspace() -> None:
                 key="consumer_chat_input",
             )
             if prompt:
-                with st.spinner("SmartShop AfterSales 正在查询订单和知识库..."):
+                with st.spinner("SmartShop AI 正在查询订单和知识库..."):
                     try:
                         result = client().send_message(selected_id, prompt)
                         if result["assistant_message"] is None:

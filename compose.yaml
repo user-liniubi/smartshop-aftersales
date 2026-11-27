@@ -23,7 +23,7 @@ services:
   redis:
     image: redis:6-alpine
     ports:
-      - "6379:6379"
+      - "6381:6379"
     volumes:
       - smartshop_redis_data:/data
     healthcheck:
@@ -32,6 +32,156 @@ services:
       timeout: 3s
       retries: 20
 
+  bootstrap:
+    build:
+      context: .
+    environment: &app-environment
+      APP_NAME: SmartShop AI
+      APP_ENV: docker
+      DEBUG: "false"
+      LOG_LEVEL: INFO
+      DATABASE_URL: mysql+pymysql://smartshop:${MYSQL_PASSWORD:-smartshop_dev_password}@mysql:3306/smartshop
+      REDIS_URL: redis://redis:6379/0
+      AUTH_SECRET: ${AUTH_SECRET:-replace_with_at_least_32_random_characters}
+      AUTH_TOKEN_EXPIRE_MINUTES: "60"
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      DEEPSEEK_TIMEOUT_SECONDS: "30"
+      CHROMA_PATH: /app/data/chroma
+      UPLOAD_DIR: /app/data/uploads
+      KNOWLEDGE_DOCS_DIR: /app/data/docs
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-zh-v1.5}
+      EMBEDDING_DEVICE: cpu
+      EMBEDDING_LOCAL_FILES_ONLY: "false"
+      EMBEDDING_WARMUP_ON_STARTUP: "true"
+      RAG_CHUNK_SIZE: "500"
+      RAG_CHUNK_OVERLAP: "80"
+      RAG_TOP_K: "4"
+      RAG_MIN_SIMILARITY: "0.5"
+      MAX_UPLOAD_BYTES: "10485760"
+      AGENT_MAX_TOOL_ROUNDS: "2"
+      AGENT_TOTAL_TIMEOUT_SECONDS: "180"
+    command:
+      - sh
+      - -c
+      - >-
+        alembic upgrade head &&
+        python -m sample_data.seed &&
+        python -m scripts.ingest_demo_docs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - smartshop_chroma_data:/app/data/chroma
+      - smartshop_upload_data:/app/data/uploads
+      - smartshop_huggingface_cache:/root/.cache/huggingface
+    restart: "no"
+
+  backend:
+    build:
+      context: .
+    environment: *app-environment
+    command:
+      - uvicorn
+      - backend.app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    ports:
+      - "8000:8000"
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - smartshop_chroma_data:/app/data/chroma
+      - smartshop_upload_data:/app/data/uploads
+      - smartshop_huggingface_cache:/root/.cache/huggingface
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+    environment: *app-environment
+    command:
+      - celery
+      - -A
+      - backend.app.workers.celery_app:celery_app
+      - worker
+      - --loglevel=INFO
+      - --pool=solo
+      - -Q
+      - knowledge
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    volumes:
+      - smartshop_chroma_data:/app/data/chroma
+      - smartshop_upload_data:/app/data/uploads
+      - smartshop_huggingface_cache:/root/.cache/huggingface
+    restart: unless-stopped
+
+  consumer:
+    build:
+      context: .
+    environment:
+      SMARTSHOP_API_URL: http://backend:8000
+    command:
+      - streamlit
+      - run
+      - frontend/consumer_app.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+    ports:
+      - "8501:8501"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: .
+    environment:
+      SMARTSHOP_API_URL: http://backend:8000
+    command:
+      - streamlit
+      - run
+      - frontend/agent_app.py
+      - --server.address=0.0.0.0
+      - --server.port=8502
+      - --server.headless=true
+    ports:
+      - "8502:8502"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   smartshop_mysql_data:
   smartshop_redis_data:
+  smartshop_chroma_data:
+  smartshop_upload_data:
+  smartshop_huggingface_cache:

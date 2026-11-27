@@ -14,7 +14,7 @@ def test_consumer_login_page_renders():
     ).run()
 
     assert not app.exception
-    assert app.title[0].value == "SmartShop AfterSales"
+    assert app.title[0].value == "SmartShop AI"
     assert len(app.text_input) == 2
     assert len(app.image) == 1
     assert app.button[0].label == "安全登录"
@@ -27,7 +27,7 @@ def test_agent_login_page_renders():
     ).run()
 
     assert not app.exception
-    assert app.title[0].value == "SmartShop AfterSales"
+    assert app.title[0].value == "SmartShop AI"
     assert len(app.text_input) == 2
     assert len(app.image) == 1
     assert app.button[0].label == "安全登录"
@@ -266,3 +266,49 @@ def test_agent_after_sales_ticket_view_renders_review_actions(monkeypatch):
     assert not app.exception
     assert any(button.label == "通过工单" for button in app.button)
     assert any(button.label == "拒绝工单" for button in app.button)
+
+
+def test_agent_config_workspace_renders_real_management_forms(monkeypatch):
+    monkeypatch.setattr(ApiClient, "list_pending_handoffs", lambda self: [])
+    monkeypatch.setattr(ApiClient, "list_my_handoffs", lambda self: [])
+    monkeypatch.setattr(
+        ApiClient,
+        "list_products",
+        lambda self, limit=20: [
+            {
+                "id": 1,
+                "name": "SmartShop 降噪耳机 Pro",
+                "description": "演示商品",
+                "specs_json": {"颜色": "曜石黑"},
+                "price": "899.00",
+                "stock_quantity": 35,
+                "is_active": True,
+            }
+        ],
+    )
+    monkeypatch.setattr(ApiClient, "list_knowledge_documents", lambda self, category=None: [])
+    monkeypatch.setattr(ApiClient, "list_discount_rules", lambda self: [])
+    monkeypatch.setattr(
+        ApiClient,
+        "list_refund_authorization_rules",
+        lambda self: [],
+    )
+    monkeypatch.setattr(ApiClient, "list_config_audit_logs", lambda self, limit=30: [])
+    app = AppTest.from_file(
+        str(ROOT / "frontend" / "agent_app.py"),
+        default_timeout=15,
+    )
+    app.session_state["agent_token"] = "test-token"
+    app.session_state["agent_user"] = {
+        "id": 3,
+        "username": "agent_demo",
+        "role": "agent",
+    }
+    app.session_state["agent_view"] = "业务配置"
+    app.run()
+
+    assert not app.exception
+    assert any(button.label == "保存商品配置" for button in app.button)
+    assert any(button.label == "上传并索引" for button in app.button)
+    assert any(button.label == "创建优惠规则" for button in app.button)
+    assert any(button.label == "创建补偿规则" for button in app.button)

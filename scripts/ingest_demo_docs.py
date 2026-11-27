@@ -3,6 +3,7 @@ from sqlalchemy import select
 from backend.app.core.config import get_settings
 from backend.app.db.session import Database
 from backend.app.models import Product
+from backend.app.models.enums import KnowledgeCategory
 from backend.app.rag.embeddings import BgeEmbeddingProvider
 from backend.app.rag.vector_store import ChromaVectorStore
 from backend.app.services.knowledge import KnowledgeService
@@ -40,6 +41,8 @@ def main() -> None:
                     path=path,
                     original_filename=demo_document.filename,
                     product_id=product_id,
+                    category=KnowledgeCategory(demo_document.category),
+                    force_reindex=True,
                 )
                 duplicate_marker = "duplicate" if result.duplicate else "indexed"
                 print(f"{duplicate_marker}: {result.document.filename} chunks={result.chunk_count}")

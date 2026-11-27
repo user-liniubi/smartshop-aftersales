@@ -56,6 +56,12 @@ class KnowledgeDocumentStatus(StrEnum):
     FAILED = "failed"
 
 
+class KnowledgeCategory(StrEnum):
+    PRODUCT = "product"
+    BUSINESS_POLICY = "business_policy"
+    SUPPORT_SOP = "support_sop"
+
+
 class IngestionJobStatus(StrEnum):
     PENDING = "pending"
     STARTED = "started"
@@ -78,6 +84,8 @@ class HandoffSource(StrEnum):
 class AfterSalesTicketType(StrEnum):
     RETURN = "return"
     EXCHANGE = "exchange"
+    REPAIR = "repair"
+    COMPENSATION = "compensation"
 
 
 class AfterSalesEligibilityStatus(StrEnum):
@@ -98,6 +106,14 @@ class AfterSalesActorType(StrEnum):
     CONSUMER = "consumer"
     AGENT = "agent"
     SYSTEM = "system"
+    AI = "ai"
+
+
+class AgentDecisionStatus(StrEnum):
+    AUTO_APPROVED = "auto_approved"
+    MANUALLY_APPROVED = "manually_approved"
+    MANUAL_REVIEW = "manual_review"
+    REJECTED = "rejected"
 
 
 class AfterSalesTicketStatus(StrEnum):
@@ -105,3 +121,9 @@ class AfterSalesTicketStatus(StrEnum):
     APPROVED = "approved"
     REJECTED = "rejected"
     CANCELLED = "cancelled"
+
+
+class RefundExecutionStatus(StrEnum):
+    PENDING = "pending"
+    SUCCESS = "success"
+    FAILED = "failed"

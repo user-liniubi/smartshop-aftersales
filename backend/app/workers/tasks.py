@@ -7,6 +7,7 @@ from backend.app.core.config import get_settings
 from backend.app.core.exceptions import AppError
 from backend.app.db.session import Database
 from backend.app.models import IngestionJobStatus
+from backend.app.models.enums import KnowledgeCategory
 from backend.app.rag.embeddings import BgeEmbeddingProvider
 from backend.app.rag.vector_store import ChromaVectorStore
 from backend.app.repositories.ingestion_jobs import get_ingestion_job
@@ -58,6 +59,7 @@ def ingest_document_task(self, task_id: str) -> dict:
                     path=Path(job.source_path),
                     original_filename=job.filename,
                     product_id=job.product_id,
+                    category=KnowledgeCategory(job.category),
                 )
                 job = get_ingestion_job(session, task_id=task_id)
                 if job is None:

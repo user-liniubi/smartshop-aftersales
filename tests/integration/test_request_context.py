@@ -10,3 +10,13 @@ def test_requests_receive_unique_traceable_request_ids(client):
     assert re.fullmatch(r"[0-9a-f]{32}", first_id)
     assert re.fullmatch(r"[0-9a-f]{32}", second_id)
     assert first_id != second_id
+
+
+def test_client_request_id_and_process_time_are_returned(client):
+    response = client.get(
+        "/health",
+        headers={"X-Request-ID": "trace_p2.test-0001"},
+    )
+
+    assert response.headers["X-Request-ID"] == "trace_p2.test-0001"
+    assert float(response.headers["X-Process-Time-Ms"]) >= 0

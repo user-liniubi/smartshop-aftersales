@@ -54,6 +54,18 @@ def test_exchange_has_zero_refund_amount():
     assert result.refund_amount == Decimal("0.00")
 
 
+def test_repair_uses_warranty_window():
+    result = AfterSalesEligibilityService().evaluate(
+        order=_order(product_name="SmartShop 降噪耳机 Pro", delivered_days_ago=30),
+        request_type="repair",
+        issue_description="右耳没有声音",
+    )
+
+    assert result.result == AfterSalesEligibilityStatus.ELIGIBLE
+    assert result.reason_code == "REPAIR_ACTIVE_WARRANTY"
+    assert result.refund_amount == Decimal("0.00")
+
+
 def test_after_return_window_but_inside_warranty_requires_human_review():
     result = AfterSalesEligibilityService().evaluate(
         order=_order(product_name="SmartShop 降噪耳机 Pro", delivered_days_ago=40),

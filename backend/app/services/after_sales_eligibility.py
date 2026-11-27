@@ -142,6 +142,43 @@ class AfterSalesEligibilityService:
                 currency=currency,
             )
 
+        if request_type == AfterSalesTicketType.REPAIR.value:
+            if elapsed_days <= warranty_days:
+                return AfterSalesEligibility(
+                    result=AfterSalesEligibilityStatus.ELIGIBLE,
+                    reason_code="REPAIR_ACTIVE_WARRANTY",
+                    explanation=(
+                        f"{product_rule.display_name}仍在 {product_rule.warranty_months} 个月"
+                        "质保期内，可以提交维修申请，最终维修方案由人工检测确认。"
+                    ),
+                    refund_amount=Decimal("0.00"),
+                    currency=currency,
+                )
+            return AfterSalesEligibility(
+                result=AfterSalesEligibilityStatus.NOT_ELIGIBLE,
+                reason_code="REPAIR_WARRANTY_EXPIRED",
+                explanation="当前商品已超过质保期，不能自动认定免费维修资格。",
+                refund_amount=None,
+                currency=currency,
+            )
+
+        if request_type == AfterSalesTicketType.COMPENSATION.value:
+            if elapsed_days <= warranty_days:
+                return AfterSalesEligibility(
+                    result=AfterSalesEligibilityStatus.ELIGIBLE,
+                    reason_code="COMPENSATION_ELIGIBLE",
+                    explanation=("订单仍在售后保障期内，可以进入授权范围内的部分补偿判断。"),
+                    refund_amount=None,
+                    currency=currency,
+                )
+            return AfterSalesEligibility(
+                result=AfterSalesEligibilityStatus.NOT_ELIGIBLE,
+                reason_code="COMPENSATION_WINDOW_EXPIRED",
+                explanation="当前订单已超过可自动判断部分补偿的保障期限。",
+                refund_amount=None,
+                currency=currency,
+            )
+
         if request_type not in {
             AfterSalesTicketType.RETURN.value,
             AfterSalesTicketType.EXCHANGE.value,

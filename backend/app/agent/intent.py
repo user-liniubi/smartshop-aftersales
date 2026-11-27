@@ -40,7 +40,6 @@ _SHIPPING_POLICY_KEYWORDS = {
     "发货",
     "配送",
     "运费",
-    "物流",
 }
 _WARRANTY_KEYWORDS = {
     "保修",
@@ -51,19 +50,49 @@ _EXPLICIT_RETURN_OR_EXCHANGE_KEYWORDS = {
     "退货",
     "退款",
     "换货",
+    "维修",
 }
+_LOGISTICS_KEYWORDS = {"物流", "运单", "快递", "到哪", "运输进度"}
+_PRODUCT_COMPARE_KEYWORDS = {"对比", "比较", "哪个好", "区别"}
+_PRODUCT_QUERY_KEYWORDS = {
+    "多少钱",
+    "价格",
+    "库存",
+    "有货",
+    "参数",
+    "规格",
+    "推荐",
+    "功能",
+    "适合",
+}
+_STRONG_PRODUCT_QUERY_KEYWORDS = {
+    "多少钱",
+    "价格",
+    "库存",
+    "有货",
+    "参数",
+    "规格",
+    "推荐",
+}
+_PROGRESS_KEYWORDS = {"售后进度", "工单进度", "处理到哪", "退款进度", "审批进度"}
+_REPAIR_KEYWORDS = {"维修", "修一下", "返修", "修理"}
+_COMPENSATION_KEYWORDS = {"补偿", "赔付", "部分退款", "赔我"}
+_DISCOUNT_KEYWORDS = {"优惠", "折扣", "便宜", "优惠券", "活动价"}
 _SUBMISSION_QUESTION_PATTERN = re.compile(
     r"(能不能|可不可以|能否|是否可以|要不要|需不需要|该不该|"
-    r"可以.{0,4}(退|换)|怎么|如何|流程|政策|了解)"
+    r"可以.{0,4}(退|换|修)|怎么|如何|流程|政策|了解)"
 )
 _SUBMISSION_ACTION_PATTERN = re.compile(
     r"(申请|提交|办理|发起|确认|帮我|给我|(?:我)?想|(?:我)?要).{0,10}"
-    r"(退货|换货|退款|退换)"
+    r"(退货|换货|退款|退换|维修|返修|补偿|赔付)"
 )
 _ORDER_SWITCH_REFERENCE_PATTERN = re.compile(
     r"(另一笔|另一个|别的|不是这个|换一笔|下一笔|"
     r"第\s*[一二三四五六七八九十\d]+\s*(?:笔|个|单|条)|"
     r"今天买的|昨天买的|前天买的)"
+)
+_GENERIC_AFTER_SALES_REQUEST_PATTERN = re.compile(
+    r"^(?:我)?(?:想|要|需要)?(?:申请|提交|办理|发起)?(?:一下)?售后(?:服务|申请)?[。！!]?$"
 )
 
 
@@ -201,6 +230,12 @@ class IntentService:
             keyword in content for keyword in _EXPLICIT_RETURN_OR_EXCHANGE_KEYWORDS
         )
         if (
+            result.intent == AfterSalesIntent.AFTER_SALES_POLICY
+            and not has_explicit_return_or_exchange
+            and any(keyword in content for keyword in _STRONG_PRODUCT_QUERY_KEYWORDS)
+        ):
+            effective_intent = AfterSalesIntent.PRODUCT_QUERY
+        if (
             result.intent != AfterSalesIntent.HUMAN_REQUEST
             and fallback_order_no is None
             and not has_explicit_return_or_exchange
@@ -212,6 +247,7 @@ class IntentService:
             any(keyword in content for keyword in _PRODUCT_USAGE_KEYWORDS)
             and fallback_order_no is None
             and not has_explicit_return_or_exchange
+            and not any(keyword in content for keyword in _STRONG_PRODUCT_QUERY_KEYWORDS)
             and result.intent != AfterSalesIntent.HUMAN_REQUEST
             and not any(keyword in content.lower() for keyword in _WARRANTY_KEYWORDS)
         ):
@@ -219,6 +255,16 @@ class IntentService:
             issue_type_update = IssueType.PRODUCT_USAGE
         if issue_type_update is not None:
             slots = slots.model_copy(update={"issue_type": issue_type_update})
+        if _GENERIC_AFTER_SALES_REQUEST_PATTERN.fullmatch(
+            content.strip()
+        ) and effective_intent not in {
+            AfterSalesIntent.HUMAN_REQUEST,
+            AfterSalesIntent.RETURN_REQUEST,
+            AfterSalesIntent.EXCHANGE_REQUEST,
+            AfterSalesIntent.REPAIR_REQUEST,
+            AfterSalesIntent.COMPENSATION_REQUEST,
+        }:
+            effective_intent = AfterSalesIntent.UNKNOWN
         return IntentResult(
             intent=effective_intent,
             slots=slots,
@@ -238,12 +284,26 @@ def _fallback_intent(content: str) -> AfterSalesIntent:
     normalized = content.lower()
     if any(keyword in content for keyword in ("人工", "客服")):
         return AfterSalesIntent.HUMAN_REQUEST
+    if any(keyword in content for keyword in _PROGRESS_KEYWORDS):
+        return AfterSalesIntent.AFTER_SALES_PROGRESS
+    if any(keyword in content for keyword in _LOGISTICS_KEYWORDS):
+        return AfterSalesIntent.LOGISTICS_QUERY
+    if any(keyword in content for keyword in _PRODUCT_COMPARE_KEYWORDS):
+        return AfterSalesIntent.PRODUCT_COMPARE
+    if any(keyword in content for keyword in _DISCOUNT_KEYWORDS):
+        return AfterSalesIntent.DISCOUNT_QUERY
+    if any(keyword in content for keyword in _REPAIR_KEYWORDS):
+        return AfterSalesIntent.REPAIR_REQUEST
+    if any(keyword in content for keyword in _COMPENSATION_KEYWORDS):
+        return AfterSalesIntent.COMPENSATION_REQUEST
     if any(keyword in content for keyword in ("换货", "更换")):
         return AfterSalesIntent.EXCHANGE_REQUEST
     if any(keyword in content for keyword in ("退货", "退款")):
         return AfterSalesIntent.RETURN_REQUEST
     if any(keyword in normalized for keyword in ("保修", "质保", "warranty")):
         return AfterSalesIntent.WARRANTY_QUESTION
+    if any(keyword in content for keyword in _PRODUCT_QUERY_KEYWORDS):
+        return AfterSalesIntent.PRODUCT_QUERY
     if any(
         keyword in content
         for keyword in (
